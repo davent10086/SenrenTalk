@@ -1,0 +1,92 @@
+{
+  "settings": {
+    "number_of_shards": 1,
+    "number_of_replicas": 0,
+    "analysis": {
+      "analyzer": {
+        "zh_ik": {
+          "type": "custom",
+          "tokenizer": "ik_max_word"
+        }
+      }
+    }
+  },
+  "mappings": {
+    "properties": {
+      "source_id": {
+        "type": "keyword"
+      },
+      "record_type": {
+        "type": "keyword"
+      },
+      "character": {
+        "type": "keyword"
+      },
+      "character_type": {
+        "type": "keyword"
+      },
+      "is_playable": {
+        "type": "boolean"
+      },
+      "chapter": {
+        "type": "keyword"
+      },
+      "chapter_major": {
+        "type": "short"
+      },
+      "chapter_minor": {
+        "type": "short"
+      },
+      "chapter_order": {
+        "type": "integer"
+      },
+      "text": {
+        "type": "text",
+        "analyzer": "zh_ik"
+      },
+      "text_norm": {
+        "type": "text",
+        "analyzer": "zh_ik"
+      },
+      "text_length": {
+        "type": "integer"
+      },
+      "all_tags": {
+        "type": "keyword"
+      },
+      "tags": {
+        "properties": {
+          "scene": {
+            "type": "keyword"
+          },
+          "emotion": {
+            "type": "keyword"
+          },
+          "function": {
+            "type": "keyword"
+          },
+          "tone": {
+            "type": "keyword"
+          }
+        }
+      },
+      "source_dialogue_keys": {
+        "type": "keyword"
+      },
+      "sparse_terms": {
+        "type": "keyword"
+      },
+      "dense_vector": {
+        "type": "dense_vector",
+        "dims": 1024,
+        "index": true,
+        "similarity": "cosine",
+        "index_options": {
+          "type": "hnsw",
+          "m": 16,
+          "ef_construction": 100
+        }
+      }
+    }
+  }
+}
