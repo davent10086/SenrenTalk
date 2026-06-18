@@ -16,12 +16,14 @@ export interface CompletionRequest {
 export interface StructuredCompletionRequest extends CompletionRequest {}
 
 /**
- * 结构化补全结果，包含中文展示内容、日语朗读稿及可选的下一说话人。
+ * 结构化补全结果，包含中文展示内容、日语朗读稿、可选的下一说话人及跳过标志。
  */
 export interface StructuredCompletionResult {
   content: string;
   speechTextJa: string;
   nextSpeaker?: string;
+  /** 群聊下 agent 可自愿跳过本次发言，此时 content/speechTextJa 为空。 */
+  skip?: boolean;
   raw: string;
 }
 
@@ -149,6 +151,7 @@ export class DeepSeekService {
       content: parsed.content || streamedContent || raw.trim(),
       speechTextJa: parsed.speechTextJa,
       nextSpeaker: parsed.nextSpeaker,
+      skip: parsed.skip,
       raw,
     };
   }
@@ -369,9 +372,9 @@ export class DeepSeekService {
  * 解析 LLM 返回的原始文本中的结构化 JSON 数据。
  * 优先尝试完整 JSON 解析，失败则通过逐字段提取降级处理。
  * @param raw - LLM 返回的原始文本。
- * @returns 解析出的 content、speechTextJa 及可选的 nextSpeaker。
+ * @returns 解析出的 content、speechTextJa、可选的 nextSpeaker 及 skip 标志。
  */
-function parseStructuredResponse(raw: string): { content: string; speechTextJa: string; nextSpeaker?: string } {
+function parseStructuredResponse(raw: string): { content: string; speechTextJa: string; nextSpeaker?: string; skip?: boolean } {
   const normalized = normalizeStructuredJson(raw);
   if (normalized) {
     try {
@@ -379,11 +382,13 @@ function parseStructuredResponse(raw: string): { content: string; speechTextJa: 
         content?: unknown;
         speechTextJa?: unknown;
         nextSpeaker?: unknown;
+        skip?: unknown;
       };
       return {
         content: typeof parsed.content === "string" ? parsed.content.trim() : "",
         speechTextJa: typeof parsed.speechTextJa === "string" ? parsed.speechTextJa.trim() : "",
         nextSpeaker: typeof parsed.nextSpeaker === "string" ? parsed.nextSpeaker.trim() : undefined,
+        skip: typeof parsed.skip === "boolean" ? parsed.skip : undefined,
       };
     } catch {
       // Fall through to tolerant field parsing.

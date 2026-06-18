@@ -86,6 +86,14 @@ interface MemoryRow {
  * 管理角色信息、聊天记录、消息、记忆事件和核心记忆等数据。
  */
 export class ChatRepository {
+  /**
+   * 会话级摘要的 character_id 占位符。
+   *
+   * 当调用方未提供 characterId 时使用此值，保持与旧版本（会话级摘要）的兼容。
+   * 群聊场景下应始终传入具体角色 ID，以实现按角色隔离的摘要记忆。
+   */
+  static readonly CHAT_LEVEL_SUMMARY_KEY = "__chat__";
+
   private readonly db: Database.Database;
 
   /**
@@ -165,9 +173,11 @@ export class ChatRepository {
 
       CREATE TABLE IF NOT EXISTS memory_summaries (
         id TEXT PRIMARY KEY,
-        chat_id TEXT NOT NULL UNIQUE,
+        chat_id TEXT NOT NULL,
+        character_id TEXT NOT NULL DEFAULT '__chat__',
         summary TEXT NOT NULL,
-        created_at INTEGER NOT NULL
+        created_at INTEGER NOT NULL,
+        UNIQUE(chat_id, character_id)
       );
 
       -- Indexes for frequently queried columns
@@ -180,6 +190,8 @@ export class ChatRepository {
 
     // 迁移：为 memory_events 添加记忆提炼字段（SQLite 的 ADD COLUMN 对已有数据兼容，旧数据为 NULL）
     this.ensureMemoryEventColumns();
+    // 迁移：为 memory_summaries 添加 character_id 列并将 UNIQUE 约束改为 (chat_id, character_id)
+    this.migrateMemorySummariesForCharacterIsolation();
   }
 
   /**
@@ -200,6 +212,45 @@ export class ChatRepository {
         this.db.exec(`ALTER TABLE memory_events ADD COLUMN ${col.name} ${col.def}`);
       }
     }
+  }
+
+  /**
+   * 迁移 memory_summaries 表以支持按 (chat_id, character_id) 隔离摘要。
+   *
+   * 旧 schema：UNIQUE(chat_id)，会话级摘要，群聊下多角色互相覆盖。
+   * 新 schema：UNIQUE(chat_id, character_id)，每个角色独立摘要。
+   *
+   * SQLite 不支持直接修改 UNIQUE 约束，需重建表：
+   * 1. 重命名旧表
+   * 2. 创建新表（新 schema）
+   * 3. 复制旧数据，character_id 填充为 CHAT_LEVEL_SUMMARY_KEY
+   * 4. 删除旧表
+   *
+   * 已迁移的表（含 character_id 列）直接跳过。
+   */
+  private migrateMemorySummariesForCharacterIsolation(): void {
+    const columns = this.db.prepare("PRAGMA table_info(memory_summaries)").all() as Array<{ name: string }>;
+    const existing = new Set(columns.map((c) => c.name));
+    if (existing.has("character_id")) {
+      return;
+    }
+
+    this.db.exec(`
+      ALTER TABLE memory_summaries RENAME TO memory_summaries_old;
+      CREATE TABLE memory_summaries (
+        id TEXT PRIMARY KEY,
+        chat_id TEXT NOT NULL,
+        character_id TEXT NOT NULL DEFAULT '${ChatRepository.CHAT_LEVEL_SUMMARY_KEY}',
+        summary TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        UNIQUE(chat_id, character_id)
+      );
+      INSERT INTO memory_summaries (id, chat_id, character_id, summary, created_at)
+        SELECT id, chat_id, '${ChatRepository.CHAT_LEVEL_SUMMARY_KEY}', summary, created_at
+        FROM memory_summaries_old;
+      DROP TABLE memory_summaries_old;
+      CREATE INDEX IF NOT EXISTS idx_memory_summaries_chat_id ON memory_summaries(chat_id);
+    `);
   }
 
   /**
@@ -533,24 +584,36 @@ export class ChatRepository {
 
   /**
    * 保存或更新聊天的记忆摘要。
-   * @param chatId - 聊天唯一标识
-   * @param summary - 摘要内容
+   *
+   * 当提供 characterId 时，摘要按 (chatId, characterId) 隔离存储，群聊下每个角色
+   * 拥有独立摘要，避免互相覆盖。未提供时回退到会话级摘要（CHAT_LEVEL_SUMMARY_KEY），
+   * 保持向后兼容。
+   *
+   * @param chatId      - 聊天唯一标识
+   * @param summary     - 摘要内容
+   * @param characterId - 角色唯一标识，群聊下必传以实现隔离
    */
-  saveSummary(chatId: string, summary: string): void {
+  saveSummary(chatId: string, summary: string, characterId?: string): void {
+    const key = characterId ?? ChatRepository.CHAT_LEVEL_SUMMARY_KEY;
     this.db.prepare(
-      `INSERT INTO memory_summaries (id, chat_id, summary, created_at)
-       VALUES (@id, @chat_id, @summary, @created_at)
-       ON CONFLICT(chat_id) DO UPDATE SET summary = excluded.summary, created_at = excluded.created_at`,
-    ).run({ id: randomUUID(), chat_id: chatId, summary, created_at: Date.now() });
+      `INSERT INTO memory_summaries (id, chat_id, character_id, summary, created_at)
+       VALUES (@id, @chat_id, @character_id, @summary, @created_at)
+       ON CONFLICT(chat_id, character_id) DO UPDATE SET summary = excluded.summary, created_at = excluded.created_at`,
+    ).run({ id: randomUUID(), chat_id: chatId, character_id: key, summary, created_at: Date.now() });
   }
 
   /**
    * 获取聊天的记忆摘要。
-   * @param chatId - 聊天唯一标识
+   *
+   * 当提供 characterId 时返回该角色的专属摘要；未提供时返回会话级摘要。
+   *
+   * @param chatId      - 聊天唯一标识
+   * @param characterId - 角色唯一标识，群聊下必传以获取对应角色摘要
    * @returns 摘要内容，如果未找到则返回 undefined
    */
-  getSummary(chatId: string): string | undefined {
-    const row = this.db.prepare("SELECT summary FROM memory_summaries WHERE chat_id = ?").get(chatId) as { summary: string } | undefined;
+  getSummary(chatId: string, characterId?: string): string | undefined {
+    const key = characterId ?? ChatRepository.CHAT_LEVEL_SUMMARY_KEY;
+    const row = this.db.prepare("SELECT summary FROM memory_summaries WHERE chat_id = ? AND character_id = ?").get(chatId, key) as { summary: string } | undefined;
     return row?.summary;
   }
 

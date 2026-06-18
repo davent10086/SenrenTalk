@@ -28,19 +28,27 @@ export class MemoryService {
   // ============ Layer 1: 短期工作记忆 ============
 
   /**
-   * 获取指定会话的当前对话摘要 (L1)
-   * @param chatId - 会话 ID
+   * 获取指定会话的当前对话摘要 (L1)。
+   *
+   * 当提供 characterId 时返回该角色的专属摘要；未提供时返回会话级摘要。
+   * 群聊下应传入 characterId 以避免跨角色摘要污染。
+   *
+   * @param chatId      - 会话 ID
+   * @param characterId - 角色 ID，群聊下必传以实现隔离
    * @returns 摘要字符串，若无则返回 undefined
    */
-  getSummary(chatId: string): string | undefined {
-    return this.repository.getSummary(chatId);
+  getSummary(chatId: string, characterId?: string): string | undefined {
+    return this.repository.getSummary(chatId, characterId);
   }
 
   /**
-   * 用 LLM 生成真正的对话摘要 (L1)，替代之前的简单截取
-   * @param chatId - 会话 ID
-   * @param character - 角色配置
-   * @param messages - 当前对话消息列表
+   * 用 LLM 生成真正的对话摘要 (L1)，按角色隔离持久化。
+   *
+   * 群聊下每个角色拥有独立摘要，避免最后一个写者覆盖其他角色的摘要。
+   *
+   * @param chatId    - 会话 ID
+   * @param character - 角色配置，其 id 作为摘要隔离键
+   * @param messages  - 当前对话消息列表
    * @returns 生成的摘要字符串
    */
   async updateSummary(chatId: string, character: CharacterProfile, messages: ChatMessage[]): Promise<string> {
@@ -49,7 +57,7 @@ export class MemoryService {
       const fallback = recentMessages
         .map((m) => `${m.role}${m.roleId ? `(${m.roleId})` : ""}: ${m.content}`)
         .join("\n");
-      this.repository.saveSummary(chatId, fallback || "暂无摘要");
+      this.repository.saveSummary(chatId, fallback || "暂无摘要", character.id);
       return fallback || "暂无摘要";
     }
 
@@ -62,7 +70,7 @@ export class MemoryService {
           characterName: character.displayName,
           recentMessages: messageText,
         });
-        this.repository.saveSummary(chatId, summary);
+        this.repository.saveSummary(chatId, summary, character.id);
         return summary;
       } catch {
         // LLM 失败时降级到原始方式
@@ -73,7 +81,7 @@ export class MemoryService {
     const fallback = recentMessages
       .map((m) => `${m.role}${m.roleId ? `(${m.roleId})` : ""}: ${m.content}`)
       .join("\n");
-    this.repository.saveSummary(chatId, fallback || "暂无摘要");
+    this.repository.saveSummary(chatId, fallback || "暂无摘要", character.id);
     return fallback || "暂无摘要";
   }
 

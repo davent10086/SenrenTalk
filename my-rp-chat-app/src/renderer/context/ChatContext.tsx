@@ -32,6 +32,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
   const refreshMessages = useCallback(async () => {
     if (!activeChatId) { setMessages([]); return; }
+    setMessages([]); // 立即清空旧消息，避免短暂停留
     setMessages(await apiClient.listMessages(activeChatId));
   }, [activeChatId]);
 
@@ -92,8 +93,8 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     if (!activeChatId) return;
     if (!window.confirm("确定要删除当前会话吗？这将永久删除该会话的所有聊天记录和记忆，且无法恢复。")) return;
     resetStream();
-    await apiClient.deleteChat(activeChatId);
-    // ViewContext 的 deleteChat 会处理导航和刷新
+    // ViewContext.deleteChat 负责 API 调用、导航和会话列表刷新
+    // ChatContext 不再重复调用 apiClient.deleteChat，避免同一会话被删除两次
     await removeChat(activeChatId);
   }, [activeChatId, resetStream, removeChat]);
 

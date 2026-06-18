@@ -6,7 +6,7 @@ import { MediaManager } from "./media-manager";
 import type { AppConfig } from "./config";
 import { createAppConfig } from "./config";
 import { ChatRepository } from "./db/database";
-import { createSingleChatGraph, type GraphDependencies } from "./graph/chat-graphs";
+import { createSingleChatGraph, type ChatGraphState, type GraphDependencies } from "./graph/chat-graphs";
 import { GroupChatCoordinator } from "./graph/group-coordinator";
 import { CharacterService } from "./services/characters/character-service";
 import { ElasticsearchService } from "./services/es/elasticsearch-service";
@@ -226,6 +226,30 @@ export class AppRuntime {
   }
 
   /**
+   * 单聊记忆处理：提取情景记忆(L2)并整合核心记忆(L3)。
+   *
+   * 与群聊 GroupChatCoordinator.processMemories 保持一致的处理方式：
+   * - 错误隔离，不抛出，仅记录警告
+   * - 通过 trackAsyncJob 注册，确保 SSE 关闭前完成
+   */
+  private async processSingleChatMemories(
+    chatId: string,
+    roleId: string,
+    finalHistory: ChatMessage[],
+  ): Promise<void> {
+    try {
+      const character = this.repository.getCharacter(roleId);
+      if (!character) return;
+      // 提取情景记忆 (L2)：从最新一轮对话中提炼关键信息并写入 SQLite + ES
+      await this.memoryService.extractAndPersist(chatId, character, finalHistory);
+      // 整合核心记忆 (L3)：定期从情景记忆中提炼用户画像和关系状态
+      await this.memoryService.consolidateCoreMemory(chatId, character, finalHistory);
+    } catch (error) {
+      console.warn(`[AppRuntime] 单聊记忆处理失败 for ${roleId}:`, error);
+    }
+  }
+
+  /**
    * 发送用户消息并触发 AI 回复。
    *
    * 流程：
@@ -290,7 +314,11 @@ export class AppRuntime {
       messages: this.repository.listMessages(chat.id),
       retrievedDocs: [],
       memories: [],
-      summary: this.repository.getSummary(chat.id),
+      // 单聊：按角色隔离摘要；群聊：初始摘要会被 retrieveMemoryNode 按当前角色重取
+      summary: this.repository.getSummary(
+        chat.id,
+        request.mode === "single" ? (orderedParticipants[0] ?? chat.participants[0]) : undefined,
+      ),
       prompt: "",
       output: "",
       speechTextJa: "",
@@ -335,7 +363,15 @@ export class AppRuntime {
           if (tracer) {
             config.callbacks = [tracer];
           }
-          await runner.invoke(state, config);
+          const result = (await runner.invoke(state, config)) as ChatGraphState;
+          // 单聊记忆处理：异步提取情景记忆(L2)和整合核心记忆(L3)
+          // 与群聊 GroupChatCoordinator.processMemories 保持一致，通过 trackAsyncJob 注册确保 SSE 关闭前完成
+          const memoryJob = this.processSingleChatMemories(
+            chat.id,
+            state.currentRoleId ?? state.participants[0],
+            result.messages ?? state.messages,
+          );
+          graphDependencies.trackAsyncJob?.(memoryJob);
         }
         await Promise.allSettled(backgroundJobs);
         if (hooks.jobId) {

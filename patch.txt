@@ -1,0 +1,12 @@
+﻿*** Begin Patch
+*** Update File: F:\yoshino\my-rp-chat-app\package.json
+
+@@ -12,6 +12,7 @@
+     "build": "tsc --noEmit && vite build",
+     "start": "tsx src/server/index.ts",
+     "typecheck": "tsc --noEmit",
++    "benchmark": "npx tsx benchmark/agent-benchmark.ts",
+     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
+     "test": "vitest run",
+     "test:watch": "vitest",
+*** End Patch

@@ -72,13 +72,40 @@ export class ApiService {
     return this.runtime.rebuildDialogueIndex();
   }
 
-  async sendMessage(request: ChatRequest, hooks?: {
-    jobId?: string;
-    onJobRunning?: (jobId: string, streamId: string) => void;
-    onJobCompleted?: (jobId: string) => void;
-    onJobFailed?: (jobId: string, errorMessage: string) => void;
-  }): Promise<ChatSendResult> {
-    return this.runtime.sendMessage(request, hooks);
+  async sendMessage(request: ChatRequest): Promise<ChatSendResult> {
+    // 并发控制：同一会话已有活跃任务（pending 或 running）时拒绝新请求
+    // 必须在创建 job 之前同步检查，避免 await 期间产生竞态窗口
+    const activeJob = this.jobs.findActiveChatJob(request.chatId);
+    if (activeJob) {
+      const error = new Error("该会话正在生成回复，请稍后再试") as Error & { statusCode: number };
+      error.statusCode = 409;
+      throw error;
+    }
+
+    // 创建 chat job 并同步注册到 JobRegistry，确保后续并发请求能检测到
+    const job = this.jobs.createJob({ type: "chat", chatId: request.chatId });
+
+    try {
+      return await this.runtime.sendMessage(request, {
+        jobId: job.id,
+        onJobRunning: (jobId, streamId) => {
+          this.jobs.updateJob(jobId, "running", { streamId });
+        },
+        onJobCompleted: (jobId) => {
+          this.jobs.updateJob(jobId, "completed");
+        },
+        onJobFailed: (jobId, errorMessage) => {
+          this.jobs.updateJob(jobId, "failed", { error: errorMessage });
+        },
+      });
+    } catch (error) {
+      // runtime.sendMessage 在 queueMicrotask 之前抛出时（如会话不存在、附件持久化失败），
+      // job hooks 不会触发，需在此标记为 failed，避免 job 永远停留在 pending 阻塞后续请求
+      this.jobs.updateJob(job.id, "failed", {
+        error: error instanceof Error ? error.message : "发送消息失败",
+      });
+      throw error;
+    }
   }
 
   // ── Job 管理 ──

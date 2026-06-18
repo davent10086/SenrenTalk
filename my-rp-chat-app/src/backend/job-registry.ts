@@ -62,4 +62,18 @@ export class JobRegistry {
   findRunningChatJob(chatId: string): BackendJob | undefined {
     return this.listJobs().find((job) => job.type === "chat" && job.chatId === chatId && job.status === "running");
   }
+
+  /**
+   * 查找指定 chatId 的活跃任务（pending 或 running）。
+   * 用于并发控制：pending 表示已创建但尚未开始执行，running 表示正在执行中。
+   * 两者都应阻止同一会话发起新的对话请求。
+   */
+  findActiveChatJob(chatId: string): BackendJob | undefined {
+    return this.listJobs().find(
+      (job) =>
+        job.type === "chat" &&
+        job.chatId === chatId &&
+        (job.status === "pending" || job.status === "running"),
+    );
+  }
 }

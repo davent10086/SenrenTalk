@@ -87,6 +87,11 @@ const ChatState = Annotation.Root({
     reducer: (_left, right) => right,
     default: () => undefined,
   }),
+  /** 群聊下 agent 自愿跳过本次发言时为 true，跳过 validate 与 save 节点直接结束。 */
+  skip: Annotation<boolean>({
+    reducer: (_left, right) => right,
+    default: () => false,
+  }),
   coreMemory: Annotation<string | undefined>({
     reducer: (_left, right) => right,
     default: () => undefined,
@@ -124,20 +129,35 @@ function findLastUserMessage(messages: ChatMessage[]): ChatMessage | undefined {
   return [...messages].reverse().find((message) => message.role === "user");
 }
 
-/** Build a retrieval query that includes recent group conversation context when in group mode. */
-function buildRetrievalQuery(messages: ChatMessage[], groupContext?: string): string {
+/**
+ * 构建检索查询。
+ *
+ * 单聊模式：直接返回最新用户消息。
+ * 群聊模式：在用户消息基础上拼接当前发言角色与用户的最近对话，
+ * 仅包含当前角色和用户的消息，避免其他角色发言稀释检索意图。
+ */
+function buildRetrievalQuery(
+  messages: ChatMessage[],
+  groupContext: string | undefined,
+  currentRoleId: string | undefined,
+): string {
   const userMsg = findLastUserMessage(messages);
   const userContent = userMsg?.content ?? "";
 
-  if (!groupContext) {
+  if (!groupContext || !currentRoleId) {
     return userContent;
   }
 
-  // In group mode, include recent messages from all participants for richer retrieval
+  // 群聊模式下，仅包含当前发言角色与用户的最近消息，避免其他角色发言稀释检索意图
   const recentMessages = messages
+    .filter((m) => m.role === "user" || m.roleId === currentRoleId)
     .slice(-6)
-    .map((m) => `${m.roleId ?? (m.role === "user" ? "用户" : m.role)}：${m.content}`)
+    .map((m) => `${m.roleId ?? "用户"}：${m.content}`)
     .join("\n");
+
+  if (!recentMessages) {
+    return userContent;
+  }
 
   return `${userContent}\n\n=== 群聊上下文 ===\n${recentMessages}`;
 }
@@ -341,7 +361,7 @@ async function prepareTurnNode(state: ChatGraphState, deps: GraphDependencies) {
   const currentRoleId = state.currentRoleId ?? state.participants[0];
   const character = await getCharacter({ ...state, currentRoleId }, deps.repository);
   // 提前计算检索查询，供后续 extract_tags/retrieve_context/retrieve_memory 复用
-  const retrievalQuery = buildRetrievalQuery(state.messages, state.groupContext);
+  const retrievalQuery = buildRetrievalQuery(state.messages, state.groupContext, currentRoleId);
   return {
     currentRoleId,
     character,
@@ -405,7 +425,7 @@ async function retrieveMemoryNode(state: ChatGraphState, deps: GraphDependencies
     : undefined;
   return {
     memories,
-    summary: deps.memoryService.getSummary(state.chatId),
+    summary: deps.memoryService.getSummary(state.chatId, state.currentRoleId),
     coreMemory: coreSummary,
   };
 }
@@ -425,7 +445,7 @@ async function buildPromptNode(state: ChatGraphState, deps: GraphDependencies) {
   };
 }
 
-/** 调用 LLM 流式生成回复，逐 token 通过 SSE 推送到前端。 */
+/** 调用 LLM 流式生成回复，逐 token 通过 SSE 推送到前端。群聊下支持 skip。 */
 async function callLlmStreamNode(state: ChatGraphState, deps: GraphDependencies) {
   deps.sseService.publish({
     type: "status",
@@ -454,10 +474,36 @@ async function callLlmStreamNode(state: ChatGraphState, deps: GraphDependencies)
       });
     },
   });
+
+  // 群聊下 agent 可自愿跳过本次发言：不保存消息，通知前端清理草稿
+  if (result.skip) {
+    deps.sseService.publish({
+      type: "status",
+      streamId: state.streamId,
+      roleId: character.id,
+      node: "call_llm_stream",
+      message: "选择保持沉默",
+    });
+    // 发送空 message_done 清理前端草稿，避免跳过后草稿残留
+    deps.sseService.publish({
+      type: "message_done",
+      streamId: state.streamId,
+      roleId: character.id,
+      content: "",
+    });
+    return {
+      output: "",
+      speechTextJa: "",
+      skip: true,
+      nextSpeaker: result.nextSpeaker,
+    };
+  }
+
   return {
     output: result.content,
     speechTextJa: result.speechTextJa,
     nextSpeaker: result.nextSpeaker,
+    skip: false,
   };
 }
 
@@ -541,9 +587,12 @@ export function createSingleChatGraph(deps: GraphDependencies) {
     .addEdge("retrieve_context", "retrieve_memory")
     .addEdge("retrieve_memory", "build_prompt")
     .addEdge("build_prompt", "call_llm_stream")
-    .addEdge("call_llm_stream", "validate_response")
+    // 群聊下 agent 可自愿跳过：skip=true 时直接结束，不进入 validate/save
+    .addConditionalEdges("call_llm_stream", (state: ChatGraphState) =>
+      state.skip ? END : "validate_response",
+    )
     .addConditionalEdges("validate_response", (state: ChatGraphState) =>
-      state.validationIssue && state.retryCount < 1 ? "retrieve_context" : "save_message",
+      state.validationIssue && state.retryCount <= 1 ? "retrieve_context" : "save_message",
     )
     .addEdge("save_message", END);
 

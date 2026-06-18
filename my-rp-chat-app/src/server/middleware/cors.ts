@@ -1,4 +1,4 @@
-﻿/**
+/**
  * CORS 中间件
  *
  * 将 CORS 校验逻辑从请求处理器中提取为独立中间件，
@@ -51,7 +51,7 @@ export function createCorsMiddleware(allowNullOrigin = false) {
     }
 
     response.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
-    response.header("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    response.header("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
 
     if (request.method === "OPTIONS") {
       response.sendStatus(204);

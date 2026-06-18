@@ -57,8 +57,11 @@ export class GroupChatCoordinator {
   /**
    * 构造群聊上下文提示词。
    *
-   * 包含参与者列表、最近发言记录、@mention 指令、nextSpeaker 引导等。
-   * 被 @ 但非目标的角色会收到"保持沉默"指令。
+   * 包含参与者列表、最近发言记录、@mention 指令、nextSpeaker 引导、
+   * 自愿跳过（skip）指令等。
+   *
+   * 注意：Turn 0 的 @mention 模式下仅被 @ 的角色会被调用，
+   * 因此无需为非目标角色构造"保持沉默"指令。
    */
   private formatGroupContext(
     roleId: string,
@@ -82,12 +85,9 @@ export class GroupChatCoordinator {
     ];
 
     if (mentionTarget) {
+      // Turn 0 的 @mention 模式：仅被 @ 的角色会进入此分支
       lines.push(`用户 @了 ${mentionTarget}，这条消息是给 ${mentionTarget} 的。`);
-      if (roleId !== mentionTarget) {
-        lines.push("你没有被@，本轮你应该保持沉默，不要发言。等下一轮再回应。");
-      } else {
-        lines.push("用户@了你，请优先回应。");
-      }
+      lines.push("用户@了你，请优先回应。");
     }
 
     /** 动态排序指令的最大轮次，超过后不再提示可指定 nextSpeaker。 */
@@ -110,6 +110,12 @@ export class GroupChatCoordinator {
       );
     }
 
+    // 自愿跳过指令：agent 可在任意轮次选择不发言
+    lines.push(
+      `如果你觉得当前轮次没有合适的内容可说，可以在 JSON 中添加 "skip": true 跳过本次发言。`,
+      `跳过时 content 和 speechTextJa 可以为空字符串。`,
+    );
+
     lines.push("");
     if (recentMessages) {
       lines.push(`=== 最近的群聊消息 ===\n${recentMessages}`);
@@ -124,7 +130,7 @@ export class GroupChatCoordinator {
    * 构造 groupContext + 初始状态，调用 agent.invoke 运行完整的
    * prepare → retrieve → build → LLM → validate → save 流程。
    *
-   * @returns 更新后的消息列表和 agent 指定的 nextSpeaker
+   * @returns 更新后的消息列表、agent 指定的 nextSpeaker、以及是否自愿跳过
    */
   private async runAgentTurn(params: {
     roleId: string;
@@ -135,7 +141,7 @@ export class GroupChatCoordinator {
     mentionTarget: string | null;
     turnCount: number;
     tracer?: LangChainTracer;
-  }): Promise<{ messages: ChatMessage[]; nextSpeaker?: string }> {
+  }): Promise<{ messages: ChatMessage[]; nextSpeaker?: string; skip?: boolean }> {
     const { roleId, participants, sharedHistory, chatId, streamId, mentionTarget, turnCount, tracer } = params;
 
     const groupContext = this.formatGroupContext(
@@ -158,7 +164,7 @@ export class GroupChatCoordinator {
       messages: sharedHistory,
       retrievedDocs: [] as ChatGraphState["retrievedDocs"],
       memories: [] as ChatGraphState["memories"],
-      summary: this.deps.memoryService.getSummary(chatId),
+      summary: this.deps.memoryService.getSummary(chatId, roleId),
       prompt: "",
       output: "",
       speechTextJa: "",
@@ -167,6 +173,7 @@ export class GroupChatCoordinator {
       character: undefined,
       coreMemory: undefined as string | undefined,
       groupContext,
+      skip: false,
     };
 
     const config: Record<string, unknown> = { recursionLimit: 100 };
@@ -178,6 +185,7 @@ export class GroupChatCoordinator {
     return {
       messages: result.messages,
       nextSpeaker: result.nextSpeaker as string | undefined,
+      skip: result.skip as boolean | undefined,
     };
   }
 
@@ -274,7 +282,10 @@ export class GroupChatCoordinator {
           tracer,
         });
         sharedHistory = result.messages;
-        generatedCount++;
+        // 自愿跳过不占用消息预算，但视为已轮到（从 unspoken 移除）
+        if (!result.skip) {
+          generatedCount++;
+        }
         unspoken.delete(speaker);
       } catch (error) {
         const msg = error instanceof Error ? error.message : "未知错误";
@@ -334,10 +345,13 @@ export class GroupChatCoordinator {
           tracer,
         });
         sharedHistory = result.messages;
-        generatedCount++;
+        // 自愿跳过不占用消息预算，但视为已轮到（从 unspoken 移除）
+        if (!result.skip) {
+          generatedCount++;
+        }
         unspoken.delete(speaker);
 
-        // Agent 指定的下一位发言者
+        // Agent 指定的下一位发言者（即使跳过也可提名下一位）
         nextSpeaker = result.nextSpeaker;
         if (nextSpeaker) {
           roundHasNextSpeaker = true;
@@ -355,8 +369,11 @@ export class GroupChatCoordinator {
     }
 
     // ── Post-session: async memory extraction ──
-    // Fire and forget — don't block the session completion
-    this.processMemories(chatId, participants, sharedHistory).catch((error) => {
+    // 通过 trackAsyncJob 注册，确保 app-runtime 关闭 SSE 前等待记忆处理完成，
+    // 避免应用退出时记忆提取被截断。错误隔离在 processMemories 内部完成。
+    const memoryJob = this.processMemories(chatId, participants, sharedHistory);
+    this.deps.trackAsyncJob?.(memoryJob);
+    memoryJob.catch((error) => {
       console.error("[GroupChatCoordinator] Memory processing failed:", error);
     });
   }

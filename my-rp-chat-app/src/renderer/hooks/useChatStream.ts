@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import type { ChatMode } from "../../common/types";
 import * as apiClient from "../api/client";
 import type { PendingAttachmentDraft } from "../types";
@@ -44,6 +44,10 @@ export function useChatStream(options: UseChatStreamOptions) {
   const [isStreaming, setIsStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // 用 ref 跟踪流式状态，避免闭包中读到过期的 state 值
+  // sendMessage 是 useCallback 的依赖项，用 ref 可以在不重建回调的前提下获取最新值
+  const isStreamingRef = useRef(false);
+
   const orderedDrafts = useMemo(() => drafts, [drafts]);
 
   /**
@@ -51,6 +55,7 @@ export function useChatStream(options: UseChatStreamOptions) {
    * 通常在用户手动停止或发生错误时调用
    */
   function resetStream(): void {
+    isStreamingRef.current = false;
     setIsStreaming(false);
     setError(null);
     setDrafts({});
@@ -67,6 +72,13 @@ export function useChatStream(options: UseChatStreamOptions) {
    * @param input - 发送消息所需的参数
    */
   async function sendMessage(input: SendMessageInput): Promise<void> {
+    // 前端并发防护：正在流式输出时拒绝新请求
+    // 后端也有 findActiveChatJob 兜底，但前端提前拦截可以避免无意义的网络请求和乐观更新回滚
+    if (isStreamingRef.current) {
+      setError("正在生成回复，请稍后再试");
+      return;
+    }
+    isStreamingRef.current = true;
     setIsStreaming(true);
     setError(null);
     setDrafts({});
@@ -84,6 +96,7 @@ export function useChatStream(options: UseChatStreamOptions) {
         attachments: input.attachments,
       });
     } catch (error) {
+      isStreamingRef.current = false;
       setIsStreaming(false);
       setError(error instanceof Error ? error.message : "发送消息失败，请检查网络连接或后端服务");
       throw error;
@@ -91,13 +104,52 @@ export function useChatStream(options: UseChatStreamOptions) {
 
     await new Promise<void>((resolve) => {
       const source = new EventSource(stream.streamUrl);
+      // 防止 error 事件与 onerror 重复处理：后端发送 SSE error 事件后会关闭流，
+      // 浏览器随后触发 onerror，此时状态已清理，无需重复操作
+      let settled = false;
+
+      /** 统一的结束处理：关闭连接、刷新消息、resolve Promise。幂等，多次调用安全。 */
+      const finishStream = async () => {
+        if (settled) return;
+        settled = true;
+        source.close();
+        isStreamingRef.current = false;
+        setIsStreaming(false);
+        setActiveRoleId(null);
+        await options.onMessagesChanged();
+        resolve();
+      };
+
+      /** 统一的错误处理：清理草稿、设置错误信息、结束流。幂等。 */
+      const handleError = async (message: string) => {
+        if (settled) return;
+        settled = true;
+        source.close();
+        isStreamingRef.current = false;
+        setIsStreaming(false);
+        setActiveRoleId(null);
+        setError(message);
+        setDrafts({});
+        setAgentStatus({});
+        await options.onMessagesChanged();
+        resolve();
+      };
+
+      // 安全解析 JSON：解析失败时返回 null，避免异常导致流崩溃
+      const safeParse = <T,>(raw: string): T | null => {
+        try {
+          return JSON.parse(raw) as T;
+        } catch {
+          return null;
+        }
+      };
 
       // 监听角色状态变更事件：某个角色开始/结束发言时的状态描述
       source.addEventListener("status", (event) => {
-        const payload = JSON.parse((event as MessageEvent<string>).data) as {
-          roleId?: string | null;
-          message: string;
-        };
+        const payload = safeParse<{ roleId?: string | null; message: string }>(
+          (event as MessageEvent<string>).data,
+        );
+        if (!payload) return;
         const roleId = payload.roleId ?? "__default__";
         setActiveRoleId(payload.roleId ?? null);
         setAgentStatus((current) => ({
@@ -112,10 +164,10 @@ export function useChatStream(options: UseChatStreamOptions) {
 
       // 监听 token 事件：逐词接收角色生成的文本片段，追加到对应草稿中
       source.addEventListener("token", (event) => {
-        const payload = JSON.parse((event as MessageEvent<string>).data) as {
-          roleId?: string | null;
-          token: string;
-        };
+        const payload = safeParse<{ roleId?: string | null; token: string }>(
+          (event as MessageEvent<string>).data,
+        );
+        if (!payload) return;
         const roleId = payload.roleId ?? "__default__";
         setActiveRoleId(payload.roleId ?? null);
         setDrafts((current) => ({
@@ -126,9 +178,10 @@ export function useChatStream(options: UseChatStreamOptions) {
 
       // 监听消息完成事件：某个角色的消息已写入数据库，从草稿列表中移除
       source.addEventListener("message_done", async (event) => {
-        const payload = JSON.parse((event as MessageEvent<string>).data) as {
-          roleId?: string | null;
-        };
+        const payload = safeParse<{ roleId?: string | null }>(
+          (event as MessageEvent<string>).data,
+        );
+        if (!payload) return;
         const roleId = payload.roleId ?? "__default__";
         setDrafts((current) => {
           const next = { ...current };
@@ -153,24 +206,17 @@ export function useChatStream(options: UseChatStreamOptions) {
         await options.onMessagesChanged();
       });
 
-      // 监听错误事件：流式对话过程中发生错误，终止流并设置错误信息
+      // 监听错误事件：后端通过 SSE 推送的业务错误（如 LLM 调用失败、agent 异常）
+      // 必须调用 resolve() 结束 Promise，否则 sendMessage 永远 await，且 EventSource 不会关闭
       source.addEventListener("error", (event) => {
-        const payload = JSON.parse((event as MessageEvent<string>).data) as { message?: string };
-        setIsStreaming(false);
-        setActiveRoleId(null);
-        setError(payload.message ?? "流式对话失败");
-        setDrafts({});
-        setAgentStatus({});
-        options.onMessagesChanged();
+        const payload = safeParse<{ message?: string }>((event as MessageEvent<string>).data);
+        handleError(payload?.message ?? "流式对话失败");
       });
 
-      // 连接层错误（网络中断等）：关闭连接、刷新消息列表、结束本次流式对话
-      source.onerror = async () => {
-        source.close();
-        setIsStreaming(false);
-        setActiveRoleId(null);
-        await options.onMessagesChanged();
-        resolve();
+      // 连接层错误（网络中断、后端关闭流等）：结束本次流式对话
+      // 后端正常关闭流时也会触发 onerror（EventSource 收到 EOF），此时 settled 已为 true，finishStream 幂等返回
+      source.onerror = () => {
+        void finishStream();
       };
     });
   }
