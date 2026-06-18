@@ -1,4 +1,4 @@
-# SenrenTalk
+﻿# SenrenTalk
 
 <p align="center">
   <img src="https://img.shields.io/badge/TypeScript-ES2022-3178C6?logo=typescript" alt="TypeScript"/>
@@ -9,290 +9,238 @@
   <img src="https://img.shields.io/badge/Elasticsearch-9-005571?logo=elasticsearch" alt="Elasticsearch"/>
 </p>
 
-基于 **LangGraph** 的多角色 AI 角色扮演对话应用，支持单聊、多角色群聊，具备三层记忆体系、流式对话体验、多媒体附件与日语 TTS 语音合成。
-
-> 应用代码在 [my-rp-chat-app/](my-rp-chat-app/) 下，角色配置与构建脚本在 `索引数据/` 和 `脚本/` 中。
-
+鍩轰簬 **LangGraph** 鐨勫瑙掕壊 AI 瑙掕壊鎵紨瀵硅瘽搴旂敤锛屾敮鎸佸崟鑱娿€佸瑙掕壊缇よ亰锛屽叿澶囦笁灞傝蹇嗕綋绯汇€佹祦寮忓璇濅綋楠屻€佸濯掍綋闄勪欢涓庢棩璇?TTS 璇煶鍚堟垚銆?
+> 搴旂敤浠ｇ爜鍦?[my-rp-chat-app/](my-rp-chat-app/) 涓嬶紝瑙掕壊閰嶇疆涓庢瀯寤鸿剼鏈湪 `绱㈠紩鏁版嵁/` 鍜?`鑴氭湰/` 涓€?
 ---
 
-## 目录
+## 鐩綍
 
-- [运行截图](#运行截图)
-- [特性亮点](#特性亮点)
-- [技术栈](#技术栈)
-- [快速开始](#快速开始)
-- [项目结构](#项目结构)
-- [架构总览](#架构总览)
-- [数据库](#数据库)
-- [安全措施](#安全措施)
-- [常见问题](#常见问题)
+- [杩愯鎴浘](#杩愯鎴浘)
+- [鐗规€т寒鐐筣(#鐗规€т寒鐐?
+- [鎶€鏈爤](#鎶€鏈爤)
+- [蹇€熷紑濮媇(#蹇€熷紑濮?
+- [椤圭洰缁撴瀯](#椤圭洰缁撴瀯)
+- [鏋舵瀯鎬昏](#鏋舵瀯鎬昏)
+- [鏁版嵁搴揮(#鏁版嵁搴?
+- [瀹夊叏鎺柦](#瀹夊叏鎺柦)
+- [甯歌闂](#甯歌闂)
 - [License](#license)
 
 ---
 
-## 运行截图
+## 杩愯鎴浘
 
-| 角色选择 | 个人对话 | 群聊场景 |
+| 瑙掕壊閫夋嫨 | 涓汉瀵硅瘽 | 缇よ亰鍦烘櫙 |
 | :---: | :---: | :---: |
-| ![角色列表](my-rp-chat-app/public/运行截图/角色列表.png) | ![个人聊天](my-rp-chat-app/public/运行截图/个人聊天.png) | ![群聊截图](my-rp-chat-app/public/运行截图/群聊截图.png) |
+| ![瑙掕壊鍒楄〃](my-rp-chat-app/public/杩愯鎴浘/瑙掕壊鍒楄〃.png) | ![涓汉鑱婂ぉ](my-rp-chat-app/public/杩愯鎴浘/涓汉鑱婂ぉ.png) | ![缇よ亰鎴浘](my-rp-chat-app/public/杩愯鎴浘/缇よ亰鎴浘.png) |
 
 ---
 
-## 特性亮点
+## 鐗规€т寒鐐?
+- **澶氳鑹茬兢鑱?*: 澶?Agent 鍗忚皟鏈哄埗锛屾敮鎸?@mention 瀹氬悜鍙戣█鍜屽姩鎬佸彂瑷€椤哄簭锛屽垎闃舵鎻愮ず鑷劧鏀跺熬
+- **涓夊眰璁板繂绯荤粺**: L1 宸ヤ綔璁板繂 鈫?L2 鎯呮櫙璁板繂 鈫?L3 鏍稿績璁板繂锛岃嚜鍔ㄦ彁鐐奸暱鏈熶俊鎭?- **娴佸紡瀵硅瘽**: SSE 瀹炴椂鎺ㄩ€侊紝Token 绾у閲忔覆鏌擄紝鏀寔澶氬鎴风杩炴帴涓?Backlog 鍥炴斁
+- **RAG 妫€绱?*: 涓夎矾娣峰悎妫€绱紙鍚戦噺 + BM25 + 鏍囩鍖归厤锛夛紝RRF 铻嶅悎鎺掑簭
+- **瑙掕壊鎵紨**: 缁撴瀯鍖栨彁绀鸿瘝娉ㄥ叆锛屽寘鍚鐢ㄨ瘝銆佽嚜绉板懠銆佽姘斻€佸叧绯昏瀹氱瓑閰嶇疆锛屽唴缃彁绀烘敞鍏ラ槻鎶?- **澶氬獟浣撻檮浠?*: 鏀寔鍥剧墖銆侀煶棰戙€佹枃浠堕檮浠朵笂浼犱笌灞曠ず锛圡IME 鐧藉悕鍗?+ 澶у皬闄愬埗锛?- **鏃ヨ TTS**: 鍙€夐泦鎴?OpenAI 鍏煎 API / Qwen CosyVoice 璇煶鍚堟垚锛屾敮鎸佽鑹查煶鑹叉槧灏?- **鍚庡彴浠诲姟绠＄悊**: JobRegistry 缁熶竴绠＄悊鑱婂ぉ浠诲姟涓庣储寮曟瀯寤轰换鍔★紝鏀寔骞跺彂鎺у埗
 
-- **多角色群聊**: 多 Agent 协调机制，支持 @mention 定向发言和动态发言顺序，分阶段提示自然收尾
-- **三层记忆系统**: L1 工作记忆 → L2 情景记忆 → L3 核心记忆，自动提炼长期信息
-- **流式对话**: SSE 实时推送，Token 级增量渲染，支持多客户端连接与 Backlog 回放
-- **RAG 检索**: 三路混合检索（向量 + BM25 + 标签匹配），RRF 融合排序
-- **角色扮演**: 结构化提示词注入，包含禁用词、自称呼、语气、关系设定等配置，内置提示注入防护
-- **多媒体附件**: 支持图片、音频、文件附件上传与展示（MIME 白名单 + 大小限制）
-- **日语 TTS**: 可选集成 OpenAI 兼容 API / Qwen CosyVoice 语音合成，支持角色音色映射
-- **后台任务管理**: JobRegistry 统一管理聊天任务与索引构建任务，支持并发控制
+## 鎶€鏈爤
 
-## 技术栈
-
-| 层 | 技术 | 版本 |
+| 灞?| 鎶€鏈?| 鐗堟湰 |
 | --- | --- | --- |
-| 运行时 | Node.js | >=22 |
-| 语言 | TypeScript | ES2022 / strict |
-| 前端 | React 18 + Vite 8 + Framer Motion | React 18.2 |
-| UI 图标 | Lucide React | latest |
-| 后端 | Express 5 | 5.2.1 |
-| AI 编排 | LangChain + LangGraph | 1.1.48 / 1.3.6 |
-| LLM | DeepSeek（通过 OpenAI 兼容 API） | deepseek-chat |
-| 向量检索 | Elasticsearch 9 + bge-m3 | 9.4.2 |
-| 数据库 | SQLite (better-sqlite3, WAL 模式) | 12.10.0 |
-| 流式推送 | Server-Sent Events (SSE) | 独立 HTTP 服务器 |
-| 文件上传 | Multer | 2.x |
-| TTS | OpenAI 兼容 / Qwen CosyVoice | 可选 |
-| 可观测性 | LangSmith | 可选 |
-| 测试 | Vitest + Testing Library | 4.x |
+| 杩愯鏃?| Node.js | >=22 |
+| 璇█ | TypeScript | ES2022 / strict |
+| 鍓嶇 | React 18 + Vite 8 + Framer Motion | React 18.2 |
+| UI 鍥炬爣 | Lucide React | latest |
+| 鍚庣 | Express 5 | 5.2.1 |
+| AI 缂栨帓 | LangChain + LangGraph | 1.1.48 / 1.3.6 |
+| LLM | DeepSeek锛堥€氳繃 OpenAI 鍏煎 API锛?| deepseek-chat |
+| 鍚戦噺妫€绱?| Elasticsearch 9 + bge-m3 | 9.4.2 |
+| 鏁版嵁搴?| SQLite (better-sqlite3, WAL 妯″紡) | 12.10.0 |
+| 娴佸紡鎺ㄩ€?| Server-Sent Events (SSE) | 鐙珛 HTTP 鏈嶅姟鍣?|
+| 鏂囦欢涓婁紶 | Multer | 2.x |
+| TTS | OpenAI 鍏煎 / Qwen CosyVoice | 鍙€?|
+| 鍙娴嬫€?| LangSmith | 鍙€?|
+| 娴嬭瘯 | Vitest + Testing Library | 4.x |
 
-## 快速开始
-
-### 前置要求
+## 蹇€熷紑濮?
+### 鍓嶇疆瑕佹眰
 
 - **Node.js**: >=22
-- **DeepSeek API Key**: 必须在 .env 中配置
-- **Elasticsearch 9** (可选): 用于向量检索，不配置则仅使用 SQLite 全文搜索
-- **Ollama** (可选): 用于本地 Embedding (bge-m3)
+- **DeepSeek API Key**: 蹇呴』鍦?.env 涓厤缃?- **Elasticsearch 9** (鍙€?: 鐢ㄤ簬鍚戦噺妫€绱紝涓嶉厤缃垯浠呬娇鐢?SQLite 鍏ㄦ枃鎼滅储
+- **Ollama** (鍙€?: 鐢ㄤ簬鏈湴 Embedding (bge-m3)
 
-### 快速开始
-
+### 蹇€熷紑濮?
 ```bash
-# 安装依赖
+# 瀹夎渚濊禆
 npm install
 
-# 配置环境变量
+# 閰嶇疆鐜鍙橀噺
 cp .env.example .env
-# 编辑 .env 填入 DEEPSEEK_API_KEY 等必填项
+# 缂栬緫 .env 濉叆 DEEPSEEK_API_KEY 绛夊繀濉」
 
-# 构建对话索引（首次运行前必须执行）
-npm run index:dialogues
+# 鏋勫缓瀵硅瘽绱㈠紩锛堥娆¤繍琛屽墠蹇呴』鎵ц锛?npm run index:dialogues
 
-# 并行启动前后端（开发模式）
+# 骞惰鍚姩鍓嶅悗绔紙寮€鍙戞ā寮忥級
 npm run dev
 
-# 仅启动后端
-npm run dev:server
+# 浠呭惎鍔ㄥ悗绔?npm run dev:server
 
-# 仅启动前端
-npm run dev:client
+# 浠呭惎鍔ㄥ墠绔?npm run dev:client
 ```
 
-访问 http://localhost:5173 进入应用。
+璁块棶 http://localhost:5173 杩涘叆搴旂敤銆?
+### 鐜鍙橀噺璇存槑
 
-### 环境变量说明
-
-| 变量 | 必填 | 说明 |
+| 鍙橀噺 | 蹇呭～ | 璇存槑 |
 | --- | --- | --- |
-| DEEPSEEK_API_KEY | 是 | DeepSeek API 密钥 |
-| DEEPSEEK_BASE_URL | 否 | 默认为 https://api.deepseek.com |
-| DEEPSEEK_MODEL | 否 | 默认为 deepseek-chat |
-| ES_NODE | 否 | ES 地址，不填则禁用 ES |
-| ES_PASSWORD | 否 | ES 密码 |
-| OLLAMA_HOST | 否 | 默认为 http://127.0.0.1:11434 |
-| OLLAMA_MODEL_NAME | 否 | 默认为 bge-m3:latest |
-| TTS_PROVIDER | 否 | disabled / openai-compatible / qwen-cosyvoice |
-| LANGSMITH_TRACING | 否 | 设为 true 启用 LangSmith 追踪 |
+| DEEPSEEK_API_KEY | 鏄?| DeepSeek API 瀵嗛挜 |
+| DEEPSEEK_BASE_URL | 鍚?| 榛樿涓?https://api.deepseek.com |
+| DEEPSEEK_MODEL | 鍚?| 榛樿涓?deepseek-chat |
+| ES_NODE | 鍚?| ES 鍦板潃锛屼笉濉垯绂佺敤 ES |
+| ES_PASSWORD | 鍚?| ES 瀵嗙爜 |
+| OLLAMA_HOST | 鍚?| 榛樿涓?http://127.0.0.1:11434 |
+| OLLAMA_MODEL_NAME | 鍚?| 榛樿涓?bge-m3:latest |
+| TTS_PROVIDER | 鍚?| disabled / openai-compatible / qwen-cosyvoice |
+| LANGSMITH_TRACING | 鍚?| 璁句负 true 鍚敤 LangSmith 杩借釜 |
 
-## 项目结构
+## 椤圭洰缁撴瀯
 
 ```
 SenrenTalk/
-├── my-rp-chat-app/           # 应用代码（主入口）
-│   ├── src/
-│   │   ├── common/types.ts            # 全部共享类型定义（消息、角色、记忆、流事件、附件等）
-│   │   ├── server/
-│   │   │   ├── index.ts               # Express 入口，路由注册
-│   │   │   ├── api-service.ts         # API 服务层，所有业务逻辑入口
-│   │   │   ├── config-check.ts        # 启动时配置校验
-│   │   │   └── middleware/
-│   │   │       ├── cors.ts            # CORS（仅允许 127.0.0.1/localhost）
-│   │   │       └── security.ts        # 速率限制 + 文件上传校验 + 全局错误处理
-│   │   ├── backend/
-│   │   │   ├── config.ts              # AppConfig 配置解析
-│   │   │   ├── app-runtime.ts         # AppRuntime：依赖注入容器 + 消息发送入口
-│   │   │   ├── worker-runtime.ts      # WorkerRuntime：Electron Worker 模式的 API 入口
-│   │   │   ├── job-registry.ts        # JobRegistry：后台任务注册中心
-│   │   │   ├── media-manager.ts       # 媒体资源管理器
-│   │   │   ├── db/database.ts         # SQLite 仓库，6 张表，5 个索引
-│   │   │   ├── graph/
-│   │   │   │   ├── chat-graphs.ts     # 单聊 LangGraph 图（7 节点）
-│   │   │   │   └── group-coordinator.ts # 群聊多 Agent 协调器
-│   │   │   └── services/
-│   │   │       ├── characters/character-service.ts
-│   │   │       ├── llm/deepseek-service.ts
-│   │   │       ├── memory/memory-service.ts
-│   │   │       ├── stream/sse-service.ts
-│   │   │       ├── tts/tts-service.ts
-│   │   │       └── es/
-│   │   │           ├── elasticsearch-service.ts
-│   │   │           └── bge-m3-embedding-service.ts
-│   │   └── renderer/
-│   │       ├── main.tsx               # 前端入口
-│   │       ├── App.tsx                # 根组件
-│   │       ├── api/client.ts          # API 客户端
-│   │       ├── hooks/useChatStream.ts # SSE 流式消费 Hook
-│   │       ├── utils/avatar.ts        # 头像路径解析
-│   │       ├── components/            # 聊天组件
-│   │       ├── pages/                 # 页面
-│   │       └── context/               # Context 状态管理
-│   ├── scripts/
-│   │   └── build-dialogue-index.ts    # 对话索引构建脚本
-│   ├── tests/                         # Vitest 测试
-│   ├── benchmark/                     # 性能基准测试
-│   ├── patches/                       # Native 补丁（better-sqlite3）
-│   ├── public/                        # 角色头像等静态资源
-│   └── docs/                          # 设计文档（TTS 方案等）
-├── 索引数据/                          # 角色配置、对话数据、ES 索引配置
-├── 脚本/                              # 数据构建工具（ES 上传等）
-├── docs/                              # 架构设计文档
-│   ├── agent-call-chain.md            # Agent 调用链路详解
-│   └── group-chat-coordination.md     # 群聊协调机制详解
-├── cover.png                          # 仓库封面
-└── LICENSE                            # MIT License
+鈹溾攢鈹€ my-rp-chat-app/           # 搴旂敤浠ｇ爜锛堜富鍏ュ彛锛?鈹?  鈹溾攢鈹€ src/
+鈹?  鈹?  鈹溾攢鈹€ common/types.ts            # 鍏ㄩ儴鍏变韩绫诲瀷瀹氫箟锛堟秷鎭€佽鑹层€佽蹇嗐€佹祦浜嬩欢銆侀檮浠剁瓑锛?鈹?  鈹?  鈹溾攢鈹€ server/
+鈹?  鈹?  鈹?  鈹溾攢鈹€ index.ts               # Express 鍏ュ彛锛岃矾鐢辨敞鍐?鈹?  鈹?  鈹?  鈹溾攢鈹€ api-service.ts         # API 鏈嶅姟灞傦紝鎵€鏈変笟鍔￠€昏緫鍏ュ彛
+鈹?  鈹?  鈹?  鈹溾攢鈹€ config-check.ts        # 鍚姩鏃堕厤缃牎楠?鈹?  鈹?  鈹?  鈹斺攢鈹€ middleware/
+鈹?  鈹?  鈹?      鈹溾攢鈹€ cors.ts            # CORS锛堜粎鍏佽 127.0.0.1/localhost锛?鈹?  鈹?  鈹?      鈹斺攢鈹€ security.ts        # 閫熺巼闄愬埗 + 鏂囦欢涓婁紶鏍￠獙 + 鍏ㄥ眬閿欒澶勭悊
+鈹?  鈹?  鈹溾攢鈹€ backend/
+鈹?  鈹?  鈹?  鈹溾攢鈹€ config.ts              # AppConfig 閰嶇疆瑙ｆ瀽
+鈹?  鈹?  鈹?  鈹溾攢鈹€ app-runtime.ts         # AppRuntime锛氫緷璧栨敞鍏ュ鍣?+ 娑堟伅鍙戦€佸叆鍙?鈹?  鈹?  鈹?  鈹溾攢鈹€ worker-runtime.ts      # WorkerRuntime锛欵lectron Worker 妯″紡鐨?API 鍏ュ彛
+鈹?  鈹?  鈹?  鈹溾攢鈹€ job-registry.ts        # JobRegistry锛氬悗鍙颁换鍔℃敞鍐屼腑蹇?鈹?  鈹?  鈹?  鈹溾攢鈹€ media-manager.ts       # 濯掍綋璧勬簮绠＄悊鍣?鈹?  鈹?  鈹?  鈹溾攢鈹€ db/database.ts         # SQLite 浠撳簱锛? 寮犺〃锛? 涓储寮?鈹?  鈹?  鈹?  鈹溾攢鈹€ graph/
+鈹?  鈹?  鈹?  鈹?  鈹溾攢鈹€ chat-graphs.ts     # 鍗曡亰 LangGraph 鍥撅紙7 鑺傜偣锛?鈹?  鈹?  鈹?  鈹?  鈹斺攢鈹€ group-coordinator.ts # 缇よ亰澶?Agent 鍗忚皟鍣?鈹?  鈹?  鈹?  鈹斺攢鈹€ services/
+鈹?  鈹?  鈹?      鈹溾攢鈹€ characters/character-service.ts
+鈹?  鈹?  鈹?      鈹溾攢鈹€ llm/deepseek-service.ts
+鈹?  鈹?  鈹?      鈹溾攢鈹€ memory/memory-service.ts
+鈹?  鈹?  鈹?      鈹溾攢鈹€ stream/sse-service.ts
+鈹?  鈹?  鈹?      鈹溾攢鈹€ tts/tts-service.ts
+鈹?  鈹?  鈹?      鈹斺攢鈹€ es/
+鈹?  鈹?  鈹?          鈹溾攢鈹€ elasticsearch-service.ts
+鈹?  鈹?  鈹?          鈹斺攢鈹€ bge-m3-embedding-service.ts
+鈹?  鈹?  鈹斺攢鈹€ renderer/
+鈹?  鈹?      鈹溾攢鈹€ main.tsx               # 鍓嶇鍏ュ彛
+鈹?  鈹?      鈹溾攢鈹€ App.tsx                # 鏍圭粍浠?鈹?  鈹?      鈹溾攢鈹€ api/client.ts          # API 瀹㈡埛绔?鈹?  鈹?      鈹溾攢鈹€ hooks/useChatStream.ts # SSE 娴佸紡娑堣垂 Hook
+鈹?  鈹?      鈹溾攢鈹€ utils/avatar.ts        # 澶村儚璺緞瑙ｆ瀽
+鈹?  鈹?      鈹溾攢鈹€ components/            # 鑱婂ぉ缁勪欢
+鈹?  鈹?      鈹溾攢鈹€ pages/                 # 椤甸潰
+鈹?  鈹?      鈹斺攢鈹€ context/               # Context 鐘舵€佺鐞?鈹?  鈹溾攢鈹€ scripts/
+鈹?  鈹?  鈹斺攢鈹€ build-dialogue-index.ts    # 瀵硅瘽绱㈠紩鏋勫缓鑴氭湰
+鈹?  鈹溾攢鈹€ tests/                         # Vitest 娴嬭瘯
+鈹?  鈹溾攢鈹€ benchmark/                     # 鎬ц兘鍩哄噯娴嬭瘯
+鈹?  鈹溾攢鈹€ patches/                       # Native 琛ヤ竵锛坆etter-sqlite3锛?鈹?  鈹溾攢鈹€ public/                        # 瑙掕壊澶村儚绛夐潤鎬佽祫婧?鈹?  鈹斺攢鈹€ docs/                          # 璁捐鏂囨。锛圱TS 鏂规绛夛級
+鈹溾攢鈹€ 绱㈠紩鏁版嵁/                          # 瑙掕壊閰嶇疆銆佸璇濇暟鎹€丒S 绱㈠紩閰嶇疆
+鈹溾攢鈹€ 鑴氭湰/                              # 鏁版嵁鏋勫缓宸ュ叿锛圗S 涓婁紶绛夛級
+鈹溾攢鈹€ docs/                              # 鏋舵瀯璁捐鏂囨。
+鈹?  鈹溾攢鈹€ agent-call-chain.md            # Agent 璋冪敤閾捐矾璇﹁В
+鈹?  鈹斺攢鈹€ group-chat-coordination.md     # 缇よ亰鍗忚皟鏈哄埗璇﹁В
+鈹溾攢鈹€ cover.png                          # 浠撳簱灏侀潰
+鈹斺攢鈹€ LICENSE                            # MIT License
 ```
 
-## 架构总览
+## 鏋舵瀯鎬昏
 
-### 双运行时模式
+### 鍙岃繍琛屾椂妯″紡
 
-项目支持两种部署模式，通过同一套 `ApiService` 提供业务能力：
-
-| 运行时 | 入口文件 | 适用场景 | 通信方式 |
+椤圭洰鏀寔涓ょ閮ㄧ讲妯″紡锛岄€氳繃鍚屼竴濂?`ApiService` 鎻愪緵涓氬姟鑳藉姏锛?
+| 杩愯鏃?| 鍏ュ彛鏂囦欢 | 閫傜敤鍦烘櫙 | 閫氫俊鏂瑰紡 |
 | --- | --- | --- | --- |
-| **AppRuntime** | `app-runtime.ts` | 独立 HTTP 服务器模式 | REST API |
-| **WorkerRuntime** | `worker-runtime.ts` | Electron 主进程 Worker | IPC 调用 |
+| **AppRuntime** | `app-runtime.ts` | 鐙珛 HTTP 鏈嶅姟鍣ㄦā寮?| REST API |
+| **WorkerRuntime** | `worker-runtime.ts` | Electron 涓昏繘绋?Worker | IPC 璋冪敤 |
 
 ```
   Browser (React 18 + Vite 8, port 5173)
-        │
-        │ HTTP (POST /api/chats/:chatId/send)
-        ▼
-  Express 5 Server (port 3001)
-        │
-        ▼  ApiService → AppRuntime / WorkerRuntime
-        │
-        ├── 单聊: createSingleChatGraph().invoke()
-        │          └── 7 节点 LangGraph 流水线
-        │              （详见下方架构文档）
-        └── 群聊: GroupChatCoordinator.runSession()
-                    └── 每个角色独立调用单聊流水线
-        │
-        ▼  SSE 独立服务器 (127.0.0.1, 随机端口)
-        │
-        │ EventSource (UUID 鉴权)
-        ▼
-  useChatStream Hook → MessageBubble 实时渲染
-                        ├── 文本增量更新
-                        ├── 图片附件缩略图
-                        └── AudioPlayer 语音播放
+        鈹?        鈹?HTTP (POST /api/chats/:chatId/send)
+        鈻?  Express 5 Server (port 3001)
+        鈹?        鈻? ApiService 鈫?AppRuntime / WorkerRuntime
+        鈹?        鈹溾攢鈹€ 鍗曡亰: createSingleChatGraph().invoke()
+        鈹?         鈹斺攢鈹€ 7 鑺傜偣 LangGraph 娴佹按绾?        鈹?             锛堣瑙佷笅鏂规灦鏋勬枃妗ｏ級
+        鈹斺攢鈹€ 缇よ亰: GroupChatCoordinator.runSession()
+                    鈹斺攢鈹€ 姣忎釜瑙掕壊鐙珛璋冪敤鍗曡亰娴佹按绾?        鈹?        鈻? SSE 鐙珛鏈嶅姟鍣?(127.0.0.1, 闅忔満绔彛)
+        鈹?        鈹?EventSource (UUID 閴存潈)
+        鈻?  useChatStream Hook 鈫?MessageBubble 瀹炴椂娓叉煋
+                        鈹溾攢鈹€ 鏂囨湰澧為噺鏇存柊
+                        鈹溾攢鈹€ 鍥剧墖闄勪欢缂╃暐鍥?                        鈹斺攢鈹€ AudioPlayer 璇煶鎾斁
 ```
 
-### Agent 调用链路（单聊）
+### Agent 璋冪敤閾捐矾锛堝崟鑱婏級
 
-单聊基于 LangGraph 的 `StateGraph`，定义了 **7 个节点** 的流水线，通过条件边实现验证重试。
-
+鍗曡亰鍩轰簬 LangGraph 鐨?`StateGraph`锛屽畾涔変簡 **7 涓妭鐐?* 鐨勬祦姘寸嚎锛岄€氳繃鏉′欢杈瑰疄鐜伴獙璇侀噸璇曘€?
 ```
-START → [1] prepare_turn → [2] retrieve_context → [3] retrieve_memory
-       → [4] build_prompt → [5] call_llm_stream → [6] validate_response
-       → [7] save_message → END
-         ↑        │
-         └────────┘ (验证失败时重试 build_prompt)
+START 鈫?[1] prepare_turn 鈫?[2] retrieve_context 鈫?[3] retrieve_memory
+       鈫?[4] build_prompt 鈫?[5] call_llm_stream 鈫?[6] validate_response
+       鈫?[7] save_message 鈫?END
+         鈫?       鈹?         鈹斺攢鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹?(楠岃瘉澶辫触鏃堕噸璇?build_prompt)
 ```
 
-> 各节点的详细实现与数据流说明见 [Agent 调用链路详解](docs/agent-call-chain.md)
+> 鍚勮妭鐐圭殑璇︾粏瀹炵幇涓庢暟鎹祦璇存槑瑙?[Agent 璋冪敤閾捐矾璇﹁В](docs/agent-call-chain.md)
 
-### 群聊多 Agent 协调
+### 缇よ亰澶?Agent 鍗忚皟
 
-`GroupChatCoordinator` 管理多个 `createSingleChatGraph` 实例，每个角色独立执行完整的 7 节点流水线。支持 @mention 定向发言、自动退出检测与分阶段提示策略。
+`GroupChatCoordinator` 绠＄悊澶氫釜 `createSingleChatGraph` 瀹炰緥锛屾瘡涓鑹茬嫭绔嬫墽琛屽畬鏁寸殑 7 鑺傜偣娴佹按绾裤€傛敮鎸?@mention 瀹氬悜鍙戣█銆佽嚜鍔ㄩ€€鍑烘娴嬩笌鍒嗛樁娈垫彁绀虹瓥鐣ャ€?
+> 鍗忚皟鍣ㄧ殑璋冪敤娴佺▼銆侀€€鍑烘潯浠朵笌鎻愮ず绛栫暐瑙?[缇よ亰鍗忚皟鏈哄埗璇﹁В](docs/group-chat-coordination.md)
 
-> 协调器的调用流程、退出条件与提示策略见 [群聊协调机制详解](docs/group-chat-coordination.md)
+### 涓夊眰璁板繂绯荤粺
 
-### 三层记忆系统
-
-| 层级 | 名称 | 存储 | 触发 | 内容 |
+| 灞傜骇 | 鍚嶇О | 瀛樺偍 | 瑙﹀彂 | 鍐呭 |
 | --- | --- | --- | --- | --- |
-| L1 | 工作记忆 | SQLite `memory_summaries` | 每次 extractAndPersist 后自动更新 | 最近 6 条消息的摘要 |
-| L2 | 情景记忆 | SQLite `memory_events` + ES | 每个 agent 发言后异步提取 | 摘要、情绪、重要度(0-10)、关键点、标签 |
-| L3 | 核心记忆 | SQLite `core_memories` + ES | 每积累 5 条 L2 记忆后整合 | 用户偏好、特质、关系阶段、笔记、关键事实 |
+| L1 | 宸ヤ綔璁板繂 | SQLite `memory_summaries` | 姣忔 extractAndPersist 鍚庤嚜鍔ㄦ洿鏂?| 鏈€杩?6 鏉℃秷鎭殑鎽樿 |
+| L2 | 鎯呮櫙璁板繂 | SQLite `memory_events` + ES | 姣忎釜 agent 鍙戣█鍚庡紓姝ユ彁鍙?| 鎽樿銆佹儏缁€侀噸瑕佸害(0-10)銆佸叧閿偣銆佹爣绛?|
+| L3 | 鏍稿績璁板繂 | SQLite `core_memories` + ES | 姣忕Н绱?5 鏉?L2 璁板繂鍚庢暣鍚?| 鐢ㄦ埛鍋忓ソ銆佺壒璐ㄣ€佸叧绯婚樁娈点€佺瑪璁般€佸叧閿簨瀹?|
 
-### SSE 流式服务
+### SSE 娴佸紡鏈嶅姟
 
-独立 HTTP 服务器，绑定 127.0.0.1 随机端口，UUID 鉴权，支持多客户端连接与 Backlog 回放。
-
-| 事件类型 | 方向 | 时机 | 负载 |
+鐙珛 HTTP 鏈嶅姟鍣紝缁戝畾 127.0.0.1 闅忔満绔彛锛孶UID 閴存潈锛屾敮鎸佸瀹㈡埛绔繛鎺ヤ笌 Backlog 鍥炴斁銆?
+| 浜嬩欢绫诲瀷 | 鏂瑰悜 | 鏃舵満 | 璐熻浇 |
 | --- | --- | --- | --- |
-| status | 服务端→客户端 | 节点开始执行 | { roleId, message } |
-| token | 服务端→客户端 | LLM 逐 token 输出 | { roleId, token } |
-| message_done | 服务端→客户端 | 消息保存完成 | { roleId, messageId, content, metadata } |
-| audio_ready | 服务端→客户端 | TTS 合成完成 | { roleId, messageId, relativePath } |
-| error | 服务端→客户端 | 执行出错 | { roleId?, message } |
+| status | 鏈嶅姟绔啋瀹㈡埛绔?| 鑺傜偣寮€濮嬫墽琛?| { roleId, message } |
+| token | 鏈嶅姟绔啋瀹㈡埛绔?| LLM 閫?token 杈撳嚭 | { roleId, token } |
+| message_done | 鏈嶅姟绔啋瀹㈡埛绔?| 娑堟伅淇濆瓨瀹屾垚 | { roleId, messageId, content, metadata } |
+| audio_ready | 鏈嶅姟绔啋瀹㈡埛绔?| TTS 鍚堟垚瀹屾垚 | { roleId, messageId, relativePath } |
+| error | 鏈嶅姟绔啋瀹㈡埛绔?| 鎵ц鍑洪敊 | { roleId?, message } |
 
-## 数据库
-
-6 张表，使用 SQLite WAL 模式 + 外键约束。
-
-| 表名 | 用途 | 关键列 |
+## 鏁版嵁搴?
+6 寮犺〃锛屼娇鐢?SQLite WAL 妯″紡 + 澶栭敭绾︽潫銆?
+| 琛ㄥ悕 | 鐢ㄩ€?| 鍏抽敭鍒?|
 | --- | --- | --- |
-| `characters` | 角色配置 | id, name, display_name, is_playable, character_type, summary, prompt_profile_json |
-| `chats` | 会话记录 | id, title, mode, participants_json, mention_target, created_at, updated_at |
-| `messages` | 消息 | id, chat_id (FK), role, role_id, content, timestamp, metadata_json |
-| `memory_events` | 情景记忆 | id, chat_id (FK), session_id, character, content, category, timestamp, tags_json |
-| `core_memories` | 核心记忆 | id, chat_id (FK), character_id, user_preferences_json, user_traits_json, relationship_stage, key_facts_json |
-| `memory_summaries` | 对话摘要 | id, chat_id (UNIQUE), summary, created_at |
+| `characters` | 瑙掕壊閰嶇疆 | id, name, display_name, is_playable, character_type, summary, prompt_profile_json |
+| `chats` | 浼氳瘽璁板綍 | id, title, mode, participants_json, mention_target, created_at, updated_at |
+| `messages` | 娑堟伅 | id, chat_id (FK), role, role_id, content, timestamp, metadata_json |
+| `memory_events` | 鎯呮櫙璁板繂 | id, chat_id (FK), session_id, character, content, category, timestamp, tags_json |
+| `core_memories` | 鏍稿績璁板繂 | id, chat_id (FK), character_id, user_preferences_json, user_traits_json, relationship_stage, key_facts_json |
+| `memory_summaries` | 瀵硅瘽鎽樿 | id, chat_id (UNIQUE), summary, created_at |
 
-## 安全措施
+## 瀹夊叏鎺柦
 
-| 措施 | 实现 |
+| 鎺柦 | 瀹炵幇 |
 | --- | --- |
-| SQL 注入防护 | better-sqlite3 参数化查询 |
-| 认证 | SSE 唯 UUID token 鉴权 |
-| CORS | 仅允许 127.0.0.1 / localhost / null origin |
-| 速率限制 | 每分钟 60 次 |
-| 文件上传 | MIME 白名单 + 大小限制 (5MB) + 数量限制 (6 个) |
-| 全局错误处理 | 5xx 不暴露内部错误信息 |
-| 提示注入防护 | system prompt 中标记不可信参考领域 |
-| API Key | 仅从环境变量读取，不记录日志 |
+| SQL 娉ㄥ叆闃叉姢 | better-sqlite3 鍙傛暟鍖栨煡璇?|
+| 璁よ瘉 | SSE 鍞?UUID token 閴存潈 |
+| CORS | 浠呭厑璁?127.0.0.1 / localhost / null origin |
+| 閫熺巼闄愬埗 | 姣忓垎閽?60 娆?|
+| 鏂囦欢涓婁紶 | MIME 鐧藉悕鍗?+ 澶у皬闄愬埗 (5MB) + 鏁伴噺闄愬埗 (6 涓? |
+| 鍏ㄥ眬閿欒澶勭悊 | 5xx 涓嶆毚闇插唴閮ㄩ敊璇俊鎭?|
+| 鎻愮ず娉ㄥ叆闃叉姢 | system prompt 涓爣璁颁笉鍙俊鍙傝€冮鍩?|
+| API Key | 浠呬粠鐜鍙橀噺璇诲彇锛屼笉璁板綍鏃ュ織 |
 
-## 常见问题
+## 甯歌闂
 
-**Q: 启动后无法发送消息？**
-检查 .env 中 DEEPSEEK_API_KEY 是否正确配置，且网络可以访问 DeepSeek API。
-
-**Q: RAG 检索返回空结果？**
-确保已执行 npm run index:dialogues 构建索引。
-
-**Q: 群聊无限循环不结束？**
-默认最大 3 轮（maxRounds=3），连续 2 轮无指定发言者（idleStreakThreshold=2）也会退出。
-
-**Q: TTS 语音不播放？**
-确认 TTS_PROVIDER 已正确配置且对应服务可用。
-
-**Q: 附件上传失败？**
-确认文件大小不超过 5MB，MIME 类型在白名单内，单次不超过 6 个文件。
-
+**Q: 鍚姩鍚庢棤娉曞彂閫佹秷鎭紵**
+妫€鏌?.env 涓?DEEPSEEK_API_KEY 鏄惁姝ｇ‘閰嶇疆锛屼笖缃戠粶鍙互璁块棶 DeepSeek API銆?
+**Q: RAG 妫€绱㈣繑鍥炵┖缁撴灉锛?*
+纭繚宸叉墽琛?npm run index:dialogues 鏋勫缓绱㈠紩銆?
+**Q: 缇よ亰鏃犻檺寰幆涓嶇粨鏉燂紵**
+榛樿鏈€澶?3 杞紙maxRounds=3锛夛紝杩炵画 2 杞棤鎸囧畾鍙戣█鑰咃紙idleStreakThreshold=2锛変篃浼氶€€鍑恒€?
+**Q: TTS 璇煶涓嶆挱鏀撅紵**
+纭 TTS_PROVIDER 宸叉纭厤缃笖瀵瑰簲鏈嶅姟鍙敤銆?
+**Q: 闄勪欢涓婁紶澶辫触锛?*
+纭鏂囦欢澶у皬涓嶈秴杩?5MB锛孧IME 绫诲瀷鍦ㄧ櫧鍚嶅崟鍐咃紝鍗曟涓嶈秴杩?6 涓枃浠躲€?
 ## License
 
 [MIT](./LICENSE)
