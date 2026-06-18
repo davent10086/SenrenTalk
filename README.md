@@ -58,7 +58,7 @@
 | 前端 | React 18 + Vite 8 + Framer Motion | React 18.2 |
 | UI 图标 | Lucide React | latest |
 | 后端 | Express 5 | 5.2.1 |
-| AI 编排 | LangChain + LangGraph | 1.1.48 / 1.3.6 |
+| AI 编排 | LangGraph | 1.1.48 / 1.3.6 |
 | LLM | DeepSeek（通过 OpenAI 兼容 API） | deepseek-chat |
 | 向量检索 | Elasticsearch 9 + bge-m3 | 9.4.2 |
 | 数据库 | SQLite (better-sqlite3, WAL 模式) | 12.10.0 |
