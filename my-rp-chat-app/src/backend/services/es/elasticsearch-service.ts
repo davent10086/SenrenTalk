@@ -96,6 +96,8 @@ function mapHits(hits: Array<{ _score?: number | null; _source?: Record<string, 
         sourceDialogueKeys: Array.isArray(source.source_dialogue_keys)
           ? source.source_dialogue_keys.map((value) => String(value))
           : undefined,
+        contextBefore: source.context_before ? String(source.context_before) : undefined,
+        contextAfter: source.context_after ? String(source.context_after) : undefined,
       } satisfies RetrievedDoc;
     })
     .filter((doc) => Boolean(doc.sourceId));
@@ -269,6 +271,12 @@ export class ElasticsearchService {
           const text = String(row.text ?? row.passage ?? "");
           const normalizedText = String(row.text_norm ?? row.passage_norm ?? text);
           const tagRow = tagsById.get(sourceId);
+          const contextBefore = Array.isArray(row.context_before)
+            ? row.context_before.map((c: { character: string; text: string }) => `${c.character}: ${c.text}`).join(" / ")
+            : "";
+          const contextAfter = Array.isArray(row.context_after)
+            ? row.context_after.map((c: { character: string; text: string }) => `${c.character}: ${c.text}`).join(" / ")
+            : "";
           return {
             source_id: sourceId,
             record_type: String(row.record_type ?? (row.passage_id ? "passage" : "dialogue")),
@@ -284,6 +292,8 @@ export class ElasticsearchService {
             source_dialogue_keys: Array.isArray(row.source_dialogue_keys)
               ? row.source_dialogue_keys.map((value) => String(value))
               : [],
+            context_before: contextBefore,
+            context_after: contextAfter,
             dense_vector: embeddings[index] ?? [],
           };
         });

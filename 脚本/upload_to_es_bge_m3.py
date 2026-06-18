@@ -1,4 +1,4 @@
-﻿import json
+import json
 import os
 import re
 import time
@@ -14,9 +14,10 @@ from urllib3.exceptions import InsecureRequestWarning
 
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-DATA_DIR = BASE_DIR / "绱㈠紩鏁版嵁"
+DATA_DIR = BASE_DIR / "索引数据"
 
-# 鍏佽閫氳繃鐜鍙橀噺瑕嗙洊锛岄粯璁ゅ€肩洿鎺ヤ娇鐢ㄤ綘缁欑殑閰嶇疆銆?ES_URL = os.environ.get("ES_URL") or os.environ.get("ES_NODE") or "https://127.0.0.1:9200/"
+# 允许通过环境变量覆盖，默认值直接使用你给的配置。
+ES_URL = os.environ.get("ES_URL") or os.environ.get("ES_NODE") or "https://127.0.0.1:9200/"
 ES_USERNAME = os.environ.get("ES_USERNAME") or os.environ.get("ES_USER") or "elastic"
 ES_PASSWORD = os.environ.get("ES_PASSWORD") or ""
 ES_INDEX_NAME = os.environ.get("ES_INDEX_NAME", "senren_dialogues")
@@ -51,8 +52,9 @@ def build_tag_map(rows: Iterable[dict]) -> Dict[str, dict]:
 
 
 def build_sparse_terms(text: str, top_n: int) -> List[str]:
-    # Ollama 鐨?embedding 鎺ュ彛鍙繑鍥?dense embedding锛岃繖閲岀敤杞婚噺璇嶉」鎻愬彇淇濈暀
-    # 涓€涓彲杩囨护鐨?sparse_terms 瀛楁锛屼究浜庡悗缁湪 ES 涓仛 terms/filter銆?    tokens = re.findall(r"[\u4e00-\u9fff]{1,4}|[A-Za-z0-9_]+", text)
+    # Ollama 的 embedding 接口只返回 dense embedding，这里用轻量词项提取保留
+    # 一个可过滤的 sparse_terms 字段，便于后续在 ES 中做 terms/filter。
+    tokens = re.findall(r"[\u4e00-\u9fff]{1,4}|[A-Za-z0-9_]+", text)
     unique_tokens: List[str] = []
     seen = set()
     for token in tokens:
@@ -67,9 +69,9 @@ def build_sparse_terms(text: str, top_n: int) -> List[str]:
 
 def strip_outer_quotes(text: str) -> str:
     quote_pairs = {
-        "銆?: "銆?,
-        "銆?: "銆?,
-        "鈥?: "鈥?,
+        "「": "」",
+        "『": "』",
+        "“": "”",
         '"': '"',
         "'": "'",
     }
@@ -87,7 +89,7 @@ def strip_outer_quotes(text: str) -> str:
 
 def normalize_embedding_text(text: str) -> str:
     cleaned = strip_outer_quotes(text)
-    cleaned = re.sub(r'[銆屻€嶃€庛€忊€溾€?]+', " ", cleaned)
+    cleaned = re.sub(r'[「」『』“”]+', " ", cleaned)
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
     return cleaned
 
@@ -123,6 +125,8 @@ def build_passage_docs(passages: List[dict], passage_tags: Dict[str, dict]) -> L
     docs: List[dict] = []
     for row in passages:
         tag_row = passage_tags.get(row["passage_id"], {})
+        context_before = row.get("context_before", [])
+        context_after = row.get("context_after", [])
         docs.append(
             {
                 "_id": row["passage_id"],
@@ -141,6 +145,8 @@ def build_passage_docs(passages: List[dict], passage_tags: Dict[str, dict]) -> L
                 "all_tags": tag_row.get("all_tags", []),
                 "tags": tag_row.get("tags", {}),
                 "source_dialogue_keys": row.get("source_dialogue_keys", []),
+                "context_before": " / ".join(f'{c["character"]}: {c["text"]}' for c in context_before) if context_before else "",
+                "context_after": " / ".join(f'{c["character"]}: {c["text"]}' for c in context_after) if context_after else "",
             }
         )
     return docs
@@ -164,10 +170,10 @@ def create_es_client() -> Elasticsearch:
 
 def ensure_index(es: Elasticsearch, index_name: str, mapping: dict) -> None:
     if es.indices.exists(index=index_name):
-        print(f"[ES] 鍒犻櫎鏃х储寮? {index_name}")
+        print(f"[ES] 删除旧索引: {index_name}")
         es.indices.delete(index=index_name)
 
-    print(f"[ES] 鍒涘缓绱㈠紩: {index_name}")
+    print(f"[ES] 创建索引: {index_name}")
     es.indices.create(index=index_name, body=mapping)
 
 
@@ -191,7 +197,7 @@ def get_ollama_embeddings(texts: List[str]) -> List[List[float]]:
 
     embeddings = data.get("embeddings")
     if not embeddings or len(embeddings) != len(texts):
-        raise RuntimeError("Ollama embedding 杩斿洖缁撴灉寮傚父锛宔mbeddings 鏁伴噺涓庤緭鍏ヤ笉涓€鑷淬€?)
+        raise RuntimeError("Ollama embedding 返回结果异常，embeddings 数量与输入不一致。")
     return embeddings
 
 
@@ -207,7 +213,7 @@ def get_ollama_embeddings_resilient(texts: List[str]) -> List[List[float]]:
     if len(texts) == 1:
         fallback_text = normalize_embedding_text(texts[0])
         if fallback_text and fallback_text != texts[0]:
-            print(f"[OLLAMA] 鍗曟潯 embedding 澶辫触锛屾竻娲楁枃鏈悗閲嶈瘯: {texts[0][:80]!r}")
+            print(f"[OLLAMA] 单条 embedding 失败，清洗文本后重试: {texts[0][:80]!r}")
             for attempt in range(1, OLLAMA_RETRY_COUNT + 1):
                 try:
                     return get_ollama_embeddings([fallback_text])
@@ -215,7 +221,7 @@ def get_ollama_embeddings_resilient(texts: List[str]) -> List[List[float]]:
                     if attempt == OLLAMA_RETRY_COUNT:
                         break
                     time.sleep(OLLAMA_RETRY_DELAY * attempt)
-        raise RuntimeError(f"Ollama 瀵瑰崟鏉℃枃鏈?embedding 澶辫触锛屾枃鏈墠 80 瀛? {texts[0][:80]!r}")
+        raise RuntimeError(f"Ollama 对单条文本 embedding 失败，文本前 80 字: {texts[0][:80]!r}")
 
     mid = max(1, len(texts) // 2)
     left = get_ollama_embeddings_resilient(texts[:mid])
@@ -225,7 +231,7 @@ def get_ollama_embeddings_resilient(texts: List[str]) -> List[List[float]]:
 
 def encode_and_upload(es: Elasticsearch, docs: List[dict]) -> None:
     total = len(docs)
-    progress = tqdm(total=total, desc="涓婁紶鍒?ES", unit="doc")
+    progress = tqdm(total=total, desc="上传到 ES", unit="doc")
     skipped_docs = 0
 
     for batch in batched(docs, BATCH_SIZE):
@@ -235,7 +241,7 @@ def encode_and_upload(es: Elasticsearch, docs: List[dict]) -> None:
         try:
             embeddings = get_ollama_embeddings_resilient(texts)
         except RuntimeError:
-            print("[OLLAMA] 褰撳墠鎵规瀛樺湪寮傚父鏂囨湰锛屽垏鎹负閫愭潯閲嶈瘯")
+            print("[OLLAMA] 当前批次存在异常文本，切换为逐条重试")
 
         for idx, row in enumerate(batch):
             raw_text = texts[idx]
@@ -244,16 +250,16 @@ def encode_and_upload(es: Elasticsearch, docs: List[dict]) -> None:
             except RuntimeError:
                 fallback_text = row.get("text_norm", "")[:TEXT_MAX_LENGTH].strip()
                 if fallback_text and fallback_text != raw_text:
-                    print(f"[OLLAMA] 鏀圭敤 text_norm 閲嶈瘯: {row['_id']}")
+                    print(f"[OLLAMA] 改用 text_norm 重试: {row['_id']}")
                     try:
                         dense_vec = get_ollama_embeddings_resilient([fallback_text])[0]
                     except RuntimeError:
-                        print(f"[SKIP] embedding 澶辫触锛岃烦杩囨枃妗? {row['_id']}")
+                        print(f"[SKIP] embedding 失败，跳过文档: {row['_id']}")
                         skipped_docs += 1
                         progress.update(1)
                         continue
                 else:
-                    print(f"[SKIP] embedding 澶辫触锛岃烦杩囨枃妗? {row['_id']}")
+                    print(f"[SKIP] embedding 失败，跳过文档: {row['_id']}")
                     skipped_docs += 1
                     progress.update(1)
                     continue
@@ -277,6 +283,8 @@ def encode_and_upload(es: Elasticsearch, docs: List[dict]) -> None:
                         "all_tags": row["all_tags"],
                         "tags": row["tags"],
                         "source_dialogue_keys": row["source_dialogue_keys"],
+                        "context_before": row.get("context_before", ""),
+                        "context_after": row.get("context_after", ""),
                         "sparse_terms": build_sparse_terms(row["text_norm"], SPARSE_TOP_N),
                         "dense_vector": dense_vec,
                     },
@@ -290,7 +298,7 @@ def encode_and_upload(es: Elasticsearch, docs: List[dict]) -> None:
 
     progress.close()
     if skipped_docs:
-        print(f"[WARN] 鍏辫烦杩?{skipped_docs} 鏉℃棤娉曠敓鎴?embedding 鐨勬枃妗?)
+        print(f"[WARN] 共跳过 {skipped_docs} 条无法生成 embedding 的文档")
 
 
 def main() -> None:
@@ -301,25 +309,24 @@ def main() -> None:
     passage_tags = build_tag_map(load_jsonl(DATA_DIR / "passage_tags.jsonl"))
 
     docs = build_dialogue_docs(dialogues, dialogue_tags) + build_passage_docs(passages, passage_tags)
-    print(f"[DATA] 鍗曞彞: {len(dialogues)}")
-    print(f"[DATA] 娈佃惤: {len(passages)}")
-    print(f"[DATA] 鎬诲緟涓婁紶: {len(docs)}")
+    print(f"[DATA] 单句: {len(dialogues)}")
+    print(f"[DATA] 段落: {len(passages)}")
+    print(f"[DATA] 总待上传: {len(docs)}")
 
     es = create_es_client()
     info = es.info()
-    print(f"[ES] 宸茶繛鎺? {info.get('cluster_name', 'unknown')}")
+    print(f"[ES] 已连接: {info.get('cluster_name', 'unknown')}")
 
     ensure_index(es, ES_INDEX_NAME, mapping)
 
-    print(f"[OLLAMA] 浣跨敤鏈湴妯″瀷: {OLLAMA_MODEL_NAME}")
-    print(f"[OLLAMA] 鏈嶅姟鍦板潃: {OLLAMA_HOST}")
+    print(f"[OLLAMA] 使用本地模型: {OLLAMA_MODEL_NAME}")
+    print(f"[OLLAMA] 服务地址: {OLLAMA_HOST}")
 
     encode_and_upload(es, docs)
     es.indices.refresh(index=ES_INDEX_NAME)
     count = es.count(index=ES_INDEX_NAME)["count"]
-    print(f"[DONE] 绱㈠紩 {ES_INDEX_NAME} 鍏卞啓鍏?{count} 鏉℃枃妗?)
+    print(f"[DONE] 索引 {ES_INDEX_NAME} 共写入 {count} 条文档")
 
 
 if __name__ == "__main__":
     main()
-

@@ -73,6 +73,14 @@
       "source_dialogue_keys": {
         "type": "keyword"
       },
+      "context_before": {
+        "type": "text",
+        "analyzer": "zh_ik"
+      },
+      "context_after": {
+        "type": "text",
+        "analyzer": "zh_ik"
+      },
       "sparse_terms": {
         "type": "keyword"
       },

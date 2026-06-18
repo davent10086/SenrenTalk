@@ -119,6 +119,8 @@ export interface RetrievedDoc {
   isPlayable?: boolean;
   tags?: TagCollection;
   sourceDialogueKeys?: string[];
+  contextBefore?: string;
+  contextAfter?: string;
 }
 
 

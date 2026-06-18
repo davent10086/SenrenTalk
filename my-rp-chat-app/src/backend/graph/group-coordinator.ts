@@ -209,7 +209,7 @@ export class GroupChatCoordinator {
           await this.deps.memoryService.extractAndPersist(chatId, character, finalHistory);
 
           // Consolidate core memory (L3)
-          await this.deps.memoryService.consolidateCoreMemory(chatId, character, finalHistory);
+          await this.deps.memoryService.consolidateCoreMemory(chatId, character);
         } catch (error) {
           console.warn(`[GroupChatCoordinator] Memory processing failed for ${roleId}:`, error);
         }

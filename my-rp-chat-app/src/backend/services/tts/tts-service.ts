@@ -57,14 +57,16 @@ export class TtsService {
     if (!this.config.ttsBaseUrl || !this.config.ttsModel) {
       throw new Error("缺少 TTS_BASE_URL 或 TTS_MODEL。");
     }
-    if (!input.text.trim()) {
+
+    const cleanText = this.stripStageDirections(input.text);
+    if (!cleanText) {
       throw new Error("TTS 文本为空，无法合成语音。");
     }
 
     const voiceId = this.resolveVoiceId(input.roleId);
     const audio = this.config.ttsProvider === "qwen-cosyvoice"
-      ? await this.synthesizeWithQwenCosyVoice(input, voiceId)
-      : await this.synthesizeWithOpenAiCompatible(input, voiceId);
+      ? await this.synthesizeWithQwenCosyVoice({ ...input, text: cleanText }, voiceId)
+      : await this.synthesizeWithOpenAiCompatible({ ...input, text: cleanText }, voiceId);
 
     return {
       status: "ready",
@@ -72,6 +74,19 @@ export class TtsService {
       relativePath: audio.relativePath,
       mimeType: audio.mimeType,
     };
+  }
+
+  /**
+   * 移除括号内的动作描写、舞台指示、心理活动等非台词内容，
+   * 并清理多余空白，确保 TTS 只朗读实际说出口的文本。
+   */
+  private stripStageDirections(text: string): string {
+    return text
+      .replace(/（[^）]*）/g, "")
+      .replace(/\([^)]*\)/g, "")
+      .replace(/【[^】]*】/g, "")
+      .replace(/\s+/g, " ")
+      .trim();
   }
 
   private async synthesizeWithOpenAiCompatible(

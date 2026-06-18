@@ -190,36 +190,76 @@ console.log(`  保留: ${stats.kept}`);
 saveJSONL('dialogues_clean.jsonl', clean);
 console.log('已保存: dialogues_clean.jsonl');
 
-console.log('\n=== Step 3: 构建对话段落(连续同角色3-5句合并) ===');
+console.log('\n=== Step 3: 构建对话段落(连续同角色3-5句合并，含对话上下文) ===');
 const passages = [];
 let buffer = [];
+let bufferStartIndex = 0;
+let bufferEndIndex = 0;
 let lastChapter = null;
 
-clean.forEach((d) => {
-  if (!d.chapter) return;
+for (let i = 0; i < clean.length; i++) {
+  const d = clean[i];
+  if (!d.chapter) continue;
   if (d.chapter !== lastChapter && buffer.length > 0) {
-    flushBuffer(buffer, passages);
+    flushBuffer(buffer, passages, clean, bufferStartIndex, bufferEndIndex);
     buffer = [];
   }
   lastChapter = d.chapter;
 
   if (buffer.length === 0) {
     buffer.push(d);
+    bufferStartIndex = i;
+    bufferEndIndex = i;
   } else if (buffer[buffer.length - 1].character === d.character) {
     if (buffer.length >= 5) {
-      flushBuffer(buffer, passages);
+      flushBuffer(buffer, passages, clean, bufferStartIndex, bufferEndIndex);
       buffer = [d];
+      bufferStartIndex = i;
+      bufferEndIndex = i;
     } else {
       buffer.push(d);
+      bufferEndIndex = i;
     }
   } else {
-    flushBuffer(buffer, passages);
+    flushBuffer(buffer, passages, clean, bufferStartIndex, bufferEndIndex);
     buffer = [d];
+    bufferStartIndex = i;
+    bufferEndIndex = i;
   }
-});
-flushBuffer(buffer, passages);
+}
+flushBuffer(buffer, passages, clean, bufferStartIndex, bufferEndIndex);
 
-function flushBuffer(buf, result) {
+/**
+ * 提取 buffer 之前的对话上下文（其他角色的发言，最多 2 条，同章节）。
+ */
+function extractContextBefore(clean, startIndex, dominantCharacter, chapter) {
+  const context = [];
+  for (let i = startIndex - 1; i >= 0; i--) {
+    const d = clean[i];
+    if (d.chapter !== chapter) break;
+    if (d.character === dominantCharacter) continue;
+    context.unshift({ character: d.character, text: d.text });
+    if (context.length >= 2) break;
+  }
+  return context;
+}
+
+/**
+ * 提取 buffer 之后的对话上下文（其他角色的发言，最多 2 条，同章节）。
+ */
+function extractContextAfter(clean, endIndex, dominantCharacter, chapter) {
+  const context = [];
+  for (let i = endIndex + 1; i < clean.length; i++) {
+    const d = clean[i];
+    if (d.chapter !== chapter) break;
+    if (d.character === dominantCharacter) continue;
+    context.push({ character: d.character, text: d.text });
+    if (context.length >= 2) break;
+  }
+  return context;
+}
+
+function flushBuffer(buf, result, clean, startIndex, endIndex) {
   if (buf.length === 0) return;
   const filtered = buf.filter(d => getTextLength(d.text) >= 3);
   if (filtered.length >= 2) {
@@ -231,6 +271,10 @@ function flushBuffer(buf, result) {
       const passageText = filtered.map(d => d.text).join('');
       const chapter = buf[0].chapter;
       const passageId = `psg_${String(result.length + 1).padStart(5, '0')}`;
+
+      // 提取对话上下文（前后各 1-2 句其他角色发言，同章节）
+      const contextBefore = extractContextBefore(clean, startIndex, dominant, chapter);
+      const contextAfter = extractContextAfter(clean, endIndex, dominant, chapter);
 
       result.push({
         passage_id: passageId,
@@ -249,6 +293,8 @@ function flushBuffer(buf, result) {
         sentence_count: filtered.length,
         char_count: filtered.reduce((sum, d) => sum + d.text_length, 0),
         chapter,
+        context_before: contextBefore,
+        context_after: contextAfter,
         ...parseChapter(chapter)
       });
     }

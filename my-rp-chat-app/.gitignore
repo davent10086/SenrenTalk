@@ -1,4 +1,4 @@
-﻿# Logs
+# Logs
 logs
 *.log
 npm-debug.log*
@@ -32,4 +32,16 @@ coverage
 *.sln
 *.sw?
 
-*.pdf.web-data/.uploads/原始数据/
+# Data and media
+*.pdf
+.web-data/
+.uploads/
+原始数据/
+public/voice/
+
+# Temporary and runtime files
+.tmp-*
+*.orig
+*.orig.*
+*.sqlite
+*.sqlite-*

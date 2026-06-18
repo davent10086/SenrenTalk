@@ -32,7 +32,6 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
   const refreshMessages = useCallback(async () => {
     if (!activeChatId) { setMessages([]); return; }
-    setMessages([]); // 立即清空旧消息，避免短暂停留
     setMessages(await apiClient.listMessages(activeChatId));
   }, [activeChatId]);
 

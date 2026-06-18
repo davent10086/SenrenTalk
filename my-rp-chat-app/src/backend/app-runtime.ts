@@ -243,7 +243,7 @@ export class AppRuntime {
       // 提取情景记忆 (L2)：从最新一轮对话中提炼关键信息并写入 SQLite + ES
       await this.memoryService.extractAndPersist(chatId, character, finalHistory);
       // 整合核心记忆 (L3)：定期从情景记忆中提炼用户画像和关系状态
-      await this.memoryService.consolidateCoreMemory(chatId, character, finalHistory);
+      await this.memoryService.consolidateCoreMemory(chatId, character);
     } catch (error) {
       console.warn(`[AppRuntime] 单聊记忆处理失败 for ${roleId}:`, error);
     }

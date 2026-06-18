@@ -245,7 +245,16 @@ function buildUserPrompt(
 ): string {
   const referenceDocs = docs
     .slice(0, 6)
-    .map((doc, index) => `${index + 1}. [${doc.recordType}] ${doc.text}`)
+    .map((doc, index) => {
+      const parts = [`${index + 1}. [${doc.recordType}] ${doc.text}`];
+      if (doc.contextBefore) {
+        parts.push(`   ↑ 前文: ${doc.contextBefore}`);
+      }
+      if (doc.contextAfter) {
+        parts.push(`   ↓ 后文: ${doc.contextAfter}`);
+      }
+      return parts.join("\n");
+    })
     .join("\n");
   const memoryDocs = memories
     .slice(0, 4)

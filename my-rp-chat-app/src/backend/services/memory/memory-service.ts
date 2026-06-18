@@ -202,13 +202,11 @@ export class MemoryService {
    * 每积累 CORE_MEMORY_CONSOLIDATION_INTERVAL 条情景记忆后调用
    * @param chatId - 会话 ID
    * @param character - 角色配置
-   * @param _messages - 当前对话消息列表（预留参数，暂未使用）
    * @returns 提炼后的核心记忆对象，若 LLM 不可用或记忆不足则返回 null
    */
   async consolidateCoreMemory(
     chatId: string,
     character: CharacterProfile,
-    _messages: ChatMessage[],
   ): Promise<CoreMemory | null> {
     if (!this.deepSeekService) return null;
 

@@ -145,7 +145,7 @@ describe("MemoryService", () => {
     } as never);
 
     // 为丛雨整合核心记忆
-    await service.consolidateCoreMemory(chat.id, createCharacter("丛雨"), []);
+    await service.consolidateCoreMemory(chat.id, createCharacter("丛雨"));
 
     expect(consolidateMock).toHaveBeenCalledTimes(1);
     const callArgs = consolidateMock.mock.calls[0][0];

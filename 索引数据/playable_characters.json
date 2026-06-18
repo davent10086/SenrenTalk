@@ -1,0 +1,12 @@
+{
+  "playable_characters": [
+    "丛雨",
+    "芳乃",
+    "茉子",
+    "蕾娜"
+  ],
+  "default_user_character": "将臣",
+  "excluded_from_agent": [
+    "将臣"
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  "dataset_name": "千恋万花索引数据",
+  "generated_at": "2026-06-18T04:28:13.867Z",
+  "source_file": "原始数据/dialogues_chinese.jsonl",
+  "build_script": "脚本/build_indexes.js",
+  "schema_version": "2.0.0",
+  "defaults": {
+    "default_user_character": "将臣",
+    "playable_characters": [
+      "丛雨",
+      "芳乃",
+      "茉子",
+      "蕾娜"
+    ]
+  },
+  "counts": {
+    "raw_dialogues": 45185,
+    "cleaned_dialogues": 29704,
+    "passages": 6059,
+    "normalized_characters": 107,
+    "playable_dialogues": 12217,
+    "playable_passages": 2559
+  },
+  "files": {
+    "dialogues_clean": "dialogues_clean.jsonl",
+    "dialogue_passages": "dialogue_passages.jsonl",
+    "character_stats": "character_stats.json",
+    "character_aliases": "character_aliases.json",
+    "playable_characters": "playable_characters.json"
+  }
+}

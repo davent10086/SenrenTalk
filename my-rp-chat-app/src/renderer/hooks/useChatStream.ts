@@ -162,13 +162,18 @@ export function useChatStream(options: UseChatStreamOptions) {
         });
       });
 
+      /** 跟踪每个角色是否已收到 message_done，用于检测重试导致的重复 token 流 */
+      const completedRoles = new Set<string>();
+
       // 监听 token 事件：逐词接收角色生成的文本片段，追加到对应草稿中
+      // 已收到 message_done 的角色忽略后续 token（验证重试时后端会重新发布 token）
       source.addEventListener("token", (event) => {
         const payload = safeParse<{ roleId?: string | null; token: string }>(
           (event as MessageEvent<string>).data,
         );
         if (!payload) return;
         const roleId = payload.roleId ?? "__default__";
+        if (completedRoles.has(roleId)) return;
         setActiveRoleId(payload.roleId ?? null);
         setDrafts((current) => ({
           ...current,
@@ -183,6 +188,7 @@ export function useChatStream(options: UseChatStreamOptions) {
         );
         if (!payload) return;
         const roleId = payload.roleId ?? "__default__";
+        completedRoles.add(roleId);
         setDrafts((current) => {
           const next = { ...current };
           delete next[roleId];
