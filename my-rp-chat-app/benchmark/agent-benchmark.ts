@@ -29,12 +29,31 @@ class NodeTiming extends BaseCallbackHandler {
   private readonly stack = new Map<string, { node: string; start: number }[]>();
   private readonly _results: Array<{ node: string; ms: number }> = [];
 
-  handleChainStart(_chain: any, _inputs: any, runId: string, _runType: any = undefined, _tags: any = undefined, _metadata: any = undefined, runName: any = undefined, *_extra: any[]): void {
+  handleChainStart(
+    _chain: any,
+    _inputs: any,
+    runId: string,
+    _runType?: string,
+    _tags?: string[],
+    _metadata?: Record<string, unknown>,
+    runName?: string,
+    _parentRunId?: string,
+    _extra?: Record<string, unknown>,
+  ): void {
     if (!this.stack.has(runId)) this.stack.set(runId, []);
     this.stack.get(runId)!.push({ node: runName ?? _chain?.name ?? "", start: performance.now() });
   }
 
-  handleChainEnd(_outputs: any, runId: string, *_extra: any[]): void {
+  handleChainEnd(
+    _outputs: any,
+    runId: string,
+    _runType?: string,
+    _tags?: string[],
+    _metadata?: Record<string, unknown>,
+    _runName?: string,
+    _parentRunId?: string,
+    _extra?: Record<string, unknown>,
+  ): void {
     const s = this.stack.get(runId);
     if (s && s.length) {
       const entry = s.pop()!;
@@ -42,7 +61,16 @@ class NodeTiming extends BaseCallbackHandler {
     }
   }
 
-  handleChainError(_err: any, runId: string, *_extra: any[]): void {
+  handleChainError(
+    _err: any,
+    runId: string,
+    _runType?: string,
+    _tags?: string[],
+    _metadata?: Record<string, unknown>,
+    _runName?: string,
+    _parentRunId?: string,
+    _extra?: Record<string, unknown>,
+  ): void {
     const s = this.stack.get(runId);
     if (s && s.length) s.pop();
   }
