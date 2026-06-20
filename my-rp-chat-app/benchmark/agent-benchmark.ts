@@ -13,6 +13,8 @@ import path from "node:path";
 import dotenv from "dotenv";
 import { LangChainTracer } from "@langchain/core/tracers/tracer_langchain";
 import { BaseCallbackHandler } from "@langchain/core/callbacks/base";
+import type { Serialized } from "@langchain/core/load/serializable";
+import type { ChainValues } from "@langchain/core/utils/types";
 import { createAppConfig } from "../src/backend/config";
 import { ChatRepository } from "../src/backend/db/database";
 import { createSingleChatGraph, type GraphDependencies } from "../src/backend/graph/chat-graphs";
@@ -30,8 +32,8 @@ class NodeTiming extends BaseCallbackHandler {
   private readonly _results: Array<{ node: string; ms: number }> = [];
 
   handleChainStart(
-    _chain: any,
-    _inputs: any,
+    chain: Serialized,
+    _inputs: ChainValues,
     runId: string,
     _runType?: string,
     _tags?: string[],
@@ -41,18 +43,16 @@ class NodeTiming extends BaseCallbackHandler {
     _extra?: Record<string, unknown>,
   ): void {
     if (!this.stack.has(runId)) this.stack.set(runId, []);
-    this.stack.get(runId)!.push({ node: runName ?? _chain?.name ?? "", start: performance.now() });
+    this.stack.get(runId)!.push({ node: runName ?? chain?.name ?? "", start: performance.now() });
   }
 
   handleChainEnd(
-    _outputs: any,
+    _outputs: ChainValues,
     runId: string,
-    _runType?: string,
+    _parentRunId?: string,
     _tags?: string[],
     _metadata?: Record<string, unknown>,
     _runName?: string,
-    _parentRunId?: string,
-    _extra?: Record<string, unknown>,
   ): void {
     const s = this.stack.get(runId);
     if (s && s.length) {
@@ -62,14 +62,12 @@ class NodeTiming extends BaseCallbackHandler {
   }
 
   handleChainError(
-    _err: any,
+    _err: Error,
     runId: string,
-    _runType?: string,
+    _parentRunId?: string,
     _tags?: string[],
     _metadata?: Record<string, unknown>,
     _runName?: string,
-    _parentRunId?: string,
-    _extra?: Record<string, unknown>,
   ): void {
     const s = this.stack.get(runId);
     if (s && s.length) s.pop();
