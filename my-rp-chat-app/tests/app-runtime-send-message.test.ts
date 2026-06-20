@@ -368,7 +368,7 @@ describe("AppRuntime.sendMessage", () => {
 
   it("routes group chat through GroupChatCoordinator", async () => {
     const characters = [createCharacter("芳乃"), createCharacter("茉子")];
-    const { runtime, repository, publishMock } = await createRuntimeWithMocks({
+    const { runtime, repository } = await createRuntimeWithMocks({
       characters,
       llmResponse: "群聊回复",
     });
@@ -385,14 +385,6 @@ describe("AppRuntime.sendMessage", () => {
     );
 
     await flushMicrotasks();
-
-    // 若有错误，打印 SSE error 事件便于调试
-    const errorEvents = publishMock.mock.calls.filter(
-      (call) => call[0]?.type === "error",
-    );
-    if (errorEvents.length > 0) {
-      console.error("SSE error events:", errorEvents.map((c) => c[0]));
-    }
 
     // 群聊应产生多条助手消息（2 角色 × 至少 1 轮）
     const messages = repository.listMessages(chat.id);
