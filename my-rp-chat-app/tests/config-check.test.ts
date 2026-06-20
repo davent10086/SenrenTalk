@@ -9,7 +9,7 @@ afterEach(() => {
 
 describe("validateAppConfig", () => {
   it("returns no warnings when all config is valid", () => {
-    process.env.DEEPSEEK_API_KEY = "sk-test-key";
+    process.env.LLM_API_KEY = "sk-test-key";
     delete process.env.ES_TLS_REJECT_UNAUTHORIZED;
     process.env.ES_PASSWORD = "strong-password-123";
     delete process.env.LANGSMITH_TRACING;
@@ -20,22 +20,22 @@ describe("validateAppConfig", () => {
     expect(warnings).toHaveLength(0);
   });
 
-  it("returns error when DEEPSEEK_API_KEY is missing", () => {
-    delete process.env.DEEPSEEK_API_KEY;
+  it("returns error when LLM_API_KEY is missing", () => {
+    delete process.env.LLM_API_KEY;
     delete process.env.ES_TLS_REJECT_UNAUTHORIZED;
     delete process.env.ES_PASSWORD;
     delete process.env.LANGSMITH_TRACING;
 
     const warnings = validateAppConfig();
 
-    const apiKeyWarning = warnings.find((w) => w.key === "DEEPSEEK_API_KEY");
+    const apiKeyWarning = warnings.find((w) => w.key === "LLM_API_KEY");
     expect(apiKeyWarning).toBeDefined();
     expect(apiKeyWarning?.severity).toBe("error");
-    expect(apiKeyWarning?.message).toContain("DeepSeek");
+    expect(apiKeyWarning?.message).toContain("LLM");
   });
 
   it("returns warning when ES_TLS_REJECT_UNAUTHORIZED is false", () => {
-    process.env.DEEPSEEK_API_KEY = "sk-test-key";
+    process.env.LLM_API_KEY = "sk-test-key";
     process.env.ES_TLS_REJECT_UNAUTHORIZED = "false";
     process.env.ES_PASSWORD = "strong-password-123";
     delete process.env.LANGSMITH_TRACING;
@@ -49,7 +49,7 @@ describe("validateAppConfig", () => {
   });
 
   it("returns warning when LANGSMITH_TRACING is true but API key is missing", () => {
-    process.env.DEEPSEEK_API_KEY = "sk-test-key";
+    process.env.LLM_API_KEY = "sk-test-key";
     delete process.env.ES_TLS_REJECT_UNAUTHORIZED;
     process.env.ES_PASSWORD = "strong-password-123";
     process.env.LANGSMITH_TRACING = "true";

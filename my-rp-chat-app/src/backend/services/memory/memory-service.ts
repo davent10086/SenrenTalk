@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { ChatMessage, CharacterProfile, CoreMemory, MemoryEvent, RetrievedDoc } from "../../../common/types";
 import { ChatRepository } from "../../db/database";
 import { ElasticsearchService } from "../es/elasticsearch-service";
-import { DeepSeekService } from "../llm/deepseek-service";
+import { LlmService } from "../llm/llm-service";
 
 // 每积累多少条情景记忆后触发一次核心记忆提炼
 const CORE_MEMORY_CONSOLIDATION_INTERVAL = 5;
@@ -17,12 +17,12 @@ export class MemoryService {
   /**
    * @param repository - 数据库仓库，用于持久化记忆数据
    * @param elasticsearchService - ES 服务，用于情景记忆与核心记忆的高性能检索
-   * @param deepSeekService - 可选的大模型服务，用于记忆提炼与摘要生成
+   * @param llmService - 可选的大模型服务，用于记忆提炼与摘要生成
    */
   constructor(
     private readonly repository: ChatRepository,
     private readonly elasticsearchService: ElasticsearchService,
-    private readonly deepSeekService?: DeepSeekService,
+    private readonly llmService?: LlmService,
   ) {}
 
   // ============ Layer 1: 短期工作记忆 ============
@@ -61,12 +61,12 @@ export class MemoryService {
       return fallback || "暂无摘要";
     }
 
-    if (this.deepSeekService) {
+    if (this.llmService) {
       try {
         const messageText = recentMessages
           .map((m) => `${m.role === "user" ? "用户" : character.displayName}: ${m.content.slice(0, 120)}`)
           .join("\n");
-        const summary = await this.deepSeekService.generateConversationSummary({
+        const summary = await this.llmService.generateConversationSummary({
           characterName: character.displayName,
           recentMessages: messageText,
         });
@@ -140,9 +140,9 @@ export class MemoryService {
     let importance = 3;
     let keyPoints: string[] = [];
 
-    if (this.deepSeekService) {
+    if (this.llmService) {
       try {
-        const extraction = await this.deepSeekService.extractEpisodicMemory({
+        const extraction = await this.llmService.extractEpisodicMemory({
           characterName: character.displayName,
           userInput: latestUser.content,
           assistantOutput: latestAssistant.content,
@@ -208,7 +208,7 @@ export class MemoryService {
     chatId: string,
     character: CharacterProfile,
   ): Promise<CoreMemory | null> {
-    if (!this.deepSeekService) return null;
+    if (!this.llmService) return null;
 
     // 取出该角色最近的情景记忆（按 character 过滤，避免群聊下跨角色污染）
     const recentEvents = this.repository.listMemoryEvents(chatId, CORE_MEMORY_CONSOLIDATION_INTERVAL, character.id);
@@ -218,7 +218,7 @@ export class MemoryService {
     const memoriesText = recentEvents.map((e) => e.summary || e.content);
 
     try {
-      const result = await this.deepSeekService.consolidateCoreMemory({
+      const result = await this.llmService.consolidateCoreMemory({
         characterName: character.displayName,
         currentCore: currentCore
           ? JSON.stringify({ preferences: currentCore.userPreferences, traits: currentCore.userTraits, stage: currentCore.relationshipStage, notes: currentCore.relationshipNotes, facts: currentCore.keyFacts })

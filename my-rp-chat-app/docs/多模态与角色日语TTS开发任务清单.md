@@ -287,7 +287,7 @@ interface SynthesizeResult {
 
 - 目标：让模型同时输出中文显示文本和日语朗读稿
 - 涉及文件：
-  - `src/backend/services/llm/deepseek-service.ts`
+  - `src/backend/services/llm/llm-service.ts`
   - `src/backend/graph/chat-graphs.ts`
 - 建议方式：
   - 输出 JSON

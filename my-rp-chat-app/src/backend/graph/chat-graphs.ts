@@ -12,7 +12,7 @@ import type {
 import { ChatRepository } from "../db/database";
 import { CharacterService } from "../services/characters/character-service";
 import { ElasticsearchService } from "../services/es/elasticsearch-service";
-import { DeepSeekService } from "../services/llm/deepseek-service";
+import { LlmService, type ImageInput } from "../services/llm/llm-service";
 import { MemoryService } from "../services/memory/memory-service";
 import { SseService } from "../services/stream/sse-service";
 import { TtsService } from "../services/tts/tts-service";
@@ -117,10 +117,12 @@ export interface GraphDependencies {
   repository: ChatRepository;
   characterService: CharacterService;
   elasticsearchService: ElasticsearchService;
-  deepSeekService: DeepSeekService;
+  llmService: LlmService;
   memoryService: MemoryService;
   sseService: SseService;
   ttsService?: TtsService;
+  /** 读取媒体图片为 base64，用于多模态 LLM 图片理解。 */
+  readImageAsBase64?: (relativePath: string) => Promise<ImageInput | null>;
   trackAsyncJob?: (job: Promise<unknown>) => void;
 }
 
@@ -393,7 +395,7 @@ async function extractTagsNode(state: ChatGraphState, deps: GraphDependencies) {
     message: "正在分析检索意图...",
   });
   try {
-    const tags = await deps.deepSeekService.extractTags(state.retrievalQuery);
+    const tags = await deps.llmService.extractTags(state.retrievalQuery);
     return { extractedTags: tags };
   } catch {
     return { extractedTags: {} };
@@ -465,7 +467,19 @@ async function callLlmStreamNode(state: ChatGraphState, deps: GraphDependencies)
   });
   const character = state.character ?? (await getCharacter(state, deps.repository));
   const userMessage = findLastUserMessage(state.messages);
-  const result = await deps.deepSeekService.streamStructuredCompletion({
+
+  // 提取用户消息中的图片附件，用于多模态 LLM 图片理解
+  let images: ImageInput[] | undefined;
+  const imageAttachments = userMessage?.metadata?.attachments?.filter((a) => a.kind === "image") ?? [];
+  if (imageAttachments.length > 0 && deps.readImageAsBase64) {
+    const results = await Promise.all(
+      imageAttachments.map((a) => deps.readImageAsBase64!(a.relativePath)),
+    );
+    images = results.filter((r): r is ImageInput => r !== null);
+    if (images.length === 0) images = undefined;
+  }
+
+  const result = await deps.llmService.streamStructuredCompletion({
     systemPrompt: state.prompt,
     userPrompt: buildUserPrompt(
       state.retrievedDocs,
@@ -474,6 +488,7 @@ async function callLlmStreamNode(state: ChatGraphState, deps: GraphDependencies)
       userMessage?.content ?? "",
       state.coreMemory,
     ),
+    images,
     onToken: async (token) => {
       deps.sseService.publish({
         type: "token",

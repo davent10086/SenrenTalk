@@ -1,4 +1,4 @@
-﻿import path from "node:path";
+import path from "node:path";
 import dotenv from "dotenv";
 
 dotenv.config();
@@ -16,9 +16,11 @@ export interface AppConfig {
   embeddingDimensions: number;
   ollamaHost: string;
   ollamaModelName: string;
-  deepseekApiKey?: string;
-  deepseekBaseUrl: string;
-  deepseekModel: string;
+  llmApiKey?: string;
+  llmBaseUrl: string;
+  llmModel: string;
+  /** 视觉模型名称，仅在用户发送图片时使用。默认 qwen-vl-plus。 */
+  llmVisionModel: string;
   esNode: string;
   esUsername: string;
   esPassword: string;
@@ -87,9 +89,10 @@ export function createAppConfig(appRoot: string, userDataPath: string): AppConfi
     embeddingDimensions: Number.parseInt(process.env.EMBEDDING_DIMENSIONS ?? "1024", 10),
     ollamaHost: process.env.OLLAMA_HOST ?? "http://127.0.0.1:11434",
     ollamaModelName: process.env.OLLAMA_MODEL_NAME ?? "bge-m3:latest",
-    deepseekApiKey: process.env.DEEPSEEK_API_KEY,
-    deepseekBaseUrl: process.env.DEEPSEEK_BASE_URL ?? "https://api.deepseek.com",
-    deepseekModel: process.env.DEEPSEEK_MODEL ?? "deepseek-chat",
+    llmApiKey: process.env.LLM_API_KEY,
+    llmBaseUrl: process.env.LLM_BASE_URL ?? "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    llmModel: process.env.LLM_MODEL ?? "qwen-plus",
+    llmVisionModel: process.env.LLM_VISION_MODEL ?? "qwen-vl-plus",
     esNode: process.env.ES_NODE ?? "https://127.0.0.1:9200/",
     esUsername: process.env.ES_USERNAME ?? "elastic",
     esPassword: process.env.ES_PASSWORD ?? "",

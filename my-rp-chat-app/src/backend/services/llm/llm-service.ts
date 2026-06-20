@@ -2,6 +2,14 @@ import OpenAI from "openai";
 import type { AppConfig } from "../../config";
 
 /**
+ * 多模态图片输入，用于将用户发送的图片传递给视觉 LLM。
+ */
+export interface ImageInput {
+  mimeType: string;
+  base64: string;
+}
+
+/**
  * 标准补全请求参数，用于流式调用 LLM 生成回复。
  */
 export interface CompletionRequest {
@@ -12,8 +20,12 @@ export interface CompletionRequest {
 
 /**
  * 结构化补全请求参数，继承自 {@link CompletionRequest}，要求 LLM 以 JSON 格式输出。
+ * 可选的 images 字段用于传递多模态图片输入。
  */
-export interface StructuredCompletionRequest extends CompletionRequest {}
+export interface StructuredCompletionRequest extends CompletionRequest {
+  /** 用户发送的图片附件，传入后 LLM 可识别图片内容。 */
+  images?: ImageInput[];
+}
 
 /**
  * 结构化补全结果，包含中文展示内容、日语朗读稿、可选的下一说话人及跳过标志。
@@ -45,34 +57,54 @@ interface JsonStringFieldResult {
 }
 
 /**
- * DeepSeek LLM 服务封装，提供流式补全、结构化输出及日语朗读稿生成等能力。
+ * 构建 OpenAI 兼容的用户消息内容。
+ * 无图片时返回纯文本字符串；有图片时返回多模态内容数组。
  */
-export class DeepSeekService {
+function buildUserMessageContent(
+  text: string,
+  images?: ImageInput[],
+): string | Array<{ type: "text"; text: string } | { type: "image_url"; image_url: { url: string } }> {
+  if (!images || images.length === 0) {
+    return text;
+  }
+  return [
+    { type: "text", text },
+    ...images.map((img) => ({
+      type: "image_url" as const,
+      image_url: { url: `data:${img.mimeType};base64,${img.base64}` },
+    })),
+  ];
+}
+
+/**
+ * LLM 服务封装，提供流式补全、结构化输出、多模态图片理解及日语朗读稿生成等能力。
+ */
+export class LlmService {
   private readonly client: OpenAI;
 
   /**
-   * @param config - 应用配置，包含 DeepSeek API Key、Base URL 及模型名称。
+   * @param config - 应用配置，包含 LLM API Key、Base URL 及模型名称。
    */
   constructor(private readonly config: AppConfig) {
     this.client = new OpenAI({
-      apiKey: config.deepseekApiKey,
-      baseURL: config.deepseekBaseUrl,
+      apiKey: config.llmApiKey,
+      baseURL: config.llmBaseUrl,
     });
   }
 
   /**
-   * 流式调用 DeepSeek LLM，逐 token 回调并返回完整回复文本。
+   * 流式调用 LLM，逐 token 回调并返回完整回复文本。
    * @param request - 补全请求，包含系统提示词、用户提示词及 token 回调。
    * @returns 完整的回复文本。
-   * @throws 如果未配置 DEEPSEEK_API_KEY 则抛出错误。
+   * @throws 如果未配置 LLM_API_KEY 则抛出错误。
    */
   async streamCompletion(request: CompletionRequest): Promise<string> {
-    if (!this.config.deepseekApiKey) {
-      throw new Error("缺少 DEEPSEEK_API_KEY，无法调用 DeepSeek 流式接口。");
+    if (!this.config.llmApiKey) {
+      throw new Error("缺少 LLM_API_KEY，无法调用 LLM 流式接口。");
     }
 
     const stream = await this.client.chat.completions.create({
-      model: this.config.deepseekModel,
+      model: this.config.llmModel,
       stream: true,
       temperature: 0.8,
       messages: [
@@ -94,20 +126,26 @@ export class DeepSeekService {
   }
 
   /**
-   * 流式调用 DeepSeek LLM 并要求以 JSON 格式输出，同时将 content 字段增量推送给回调。
+   * 流式调用 LLM 并要求以 JSON 格式输出，同时将 content 字段增量推送给回调。
+   * 支持多模态图片输入：当 request.images 非空时，用户消息使用多模态格式，
+   * 并自动切换到视觉模型（config.llmVisionModel）；无图片时使用纯文本模型（config.llmModel）。
    * @param request - 结构化补全请求。
    * @returns 解析后的结构化结果，包含 content、speechTextJa 及可选的 nextSpeaker。
-   * @throws 如果未配置 DEEPSEEK_API_KEY 则抛出错误。
+   * @throws 如果未配置 LLM_API_KEY 则抛出错误。
    */
   async streamStructuredCompletion(
     request: StructuredCompletionRequest,
   ): Promise<StructuredCompletionResult> {
-    if (!this.config.deepseekApiKey) {
-      throw new Error("缺少 DEEPSEEK_API_KEY，无法调用 DeepSeek 流式接口。");
+    if (!this.config.llmApiKey) {
+      throw new Error("缺少 LLM_API_KEY，无法调用 LLM 流式接口。");
     }
 
+    const hasImages = !!request.images && request.images.length > 0;
+    // 双模型切换：有图片时用视觉模型，无图片时用纯文本模型
+    const model = hasImages ? this.config.llmVisionModel : this.config.llmModel;
+
     const stream = await this.client.chat.completions.create({
-      model: this.config.deepseekModel,
+      model,
       stream: true,
       temperature: 0.7,
       messages: [
@@ -122,9 +160,12 @@ export class DeepSeekService {
             "2. speechTextJa 使用自然日语口语，适合 TTS 朗读。",
             "3. 两个字段必须语义一致，保持同一角色口吻。",
             "4. JSON 的第一个键必须是 content，并尽快开始输出 content 的正文。",
+            hasImages
+              ? "用户发送了图片，请结合图片内容进行回复。"
+              : "",
           ].join("\n\n"),
         },
-        { role: "user", content: request.userPrompt },
+        { role: "user", content: buildUserMessageContent(request.userPrompt, request.images) },
       ],
     });
 
@@ -160,15 +201,15 @@ export class DeepSeekService {
    * 将中文回复改写为适合日语 TTS 朗读的自然口语文本。
    * @param request - 包含角色名、角色自称及待改写的中文内容。
    * @returns 日语朗读稿文本。
-   * @throws 如果未配置 DEEPSEEK_API_KEY 则抛出错误。
+   * @throws 如果未配置 LLM_API_KEY 则抛出错误。
    */
   async generateSpeechTextJa(request: SpeechTextRequest): Promise<string> {
-    if (!this.config.deepseekApiKey) {
-      throw new Error("缺少 DEEPSEEK_API_KEY，无法生成日语朗读稿。");
+    if (!this.config.llmApiKey) {
+      throw new Error("缺少 LLM_API_KEY，无法生成日语朗读稿。");
     }
 
     const response = await this.client.chat.completions.create({
-      model: this.config.deepseekModel,
+      model: this.config.llmModel,
       temperature: 0.4,
       messages: [
         {
@@ -199,7 +240,7 @@ export class DeepSeekService {
    */
   async extractEpisodicMemory(input: { characterName: string; userInput: string; assistantOutput: string }): Promise<{ summary: string; emotion: string; importance: number; keyPoints: string[] }> {
     const response = await this.client.chat.completions.create({
-      model: this.config.deepseekModel,
+      model: this.config.llmModel,
       temperature: 0.3,
       messages: [
         {
@@ -241,7 +282,7 @@ export class DeepSeekService {
    */
   async consolidateCoreMemory(input: { characterName: string; currentCore: string; recentMemories: string[] }): Promise<{ userPreferences: string[]; userTraits: string[]; relationshipStage: string; relationshipNotes: string[]; keyFacts: string[] }> {
     const response = await this.client.chat.completions.create({
-      model: this.config.deepseekModel,
+      model: this.config.llmModel,
       temperature: 0.3,
       messages: [
         {
@@ -305,11 +346,11 @@ export class DeepSeekService {
    * @returns 提取出的标签集合，按 emotion/function/tone 分类。
    */
   async extractTags(userMessage: string): Promise<{ emotion: string[]; function: string[]; tone: string[] }> {
-    if (!this.config.deepseekApiKey) {
+    if (!this.config.llmApiKey) {
       return { emotion: [], function: [], tone: [] };
     }
 
-    const vocab = DeepSeekService.TAG_VOCAB;
+    const vocab = LlmService.TAG_VOCAB;
     const vocabDesc = [
       `emotion: [${vocab.emotion.join(", ")}]`,
       `function: [${vocab.function.join(", ")}]`,
@@ -317,7 +358,7 @@ export class DeepSeekService {
     ].join("\n");
 
     const response = await this.client.chat.completions.create({
-      model: this.config.deepseekModel,
+      model: this.config.llmModel,
       temperature: 0.1,
       messages: [
         {
@@ -362,7 +403,7 @@ export class DeepSeekService {
    * @returns 摘要字符串，最大长度 100 字符。
    */
   async generateConversationSummary(input: { characterName: string; recentMessages: string }): Promise<string> {
-    const response = await this.client.chat.completions.create({ model: this.config.deepseekModel, temperature: 0.3, messages: [
+    const response = await this.client.chat.completions.create({ model: this.config.llmModel, temperature: 0.3, messages: [
       { role: "system", content: `摘要助手。角色名：`+input.characterName+`\n摘要：` }, { role: "user", content: `概括：\n`+input.recentMessages },
     ] });
     return response.choices[0]?.message?.content?.trim().slice(0, 100) ?? "暂无摘要";

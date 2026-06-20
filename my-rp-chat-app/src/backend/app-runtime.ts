@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { promises as fs } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { LangChainTracer } from "@langchain/core/tracers/tracer_langchain";
@@ -10,7 +11,7 @@ import { createSingleChatGraph, type ChatGraphState, type GraphDependencies } fr
 import { GroupChatCoordinator } from "./graph/group-coordinator";
 import { CharacterService } from "./services/characters/character-service";
 import { ElasticsearchService } from "./services/es/elasticsearch-service";
-import { DeepSeekService } from "./services/llm/deepseek-service";
+import { LlmService, type ImageInput } from "./services/llm/llm-service";
 import { MemoryService } from "./services/memory/memory-service";
 import { SseService } from "./services/stream/sse-service";
 import { TtsService } from "./services/tts/tts-service";
@@ -50,7 +51,7 @@ export class AppRuntime {
   readonly characterService: CharacterService;
   readonly elasticsearchService: ElasticsearchService;
   readonly memoryService: MemoryService;
-  readonly deepSeekService: DeepSeekService;
+  readonly llmService: LlmService;
   readonly ttsService: TtsService;
   readonly mediaManager: MediaManager;
   private readonly baseGraphDependencies: Omit<GraphDependencies, "trackAsyncJob">;
@@ -66,8 +67,8 @@ export class AppRuntime {
     this.sseService = new SseService();
     this.characterService = new CharacterService(this.config);
     this.elasticsearchService = new ElasticsearchService(this.config);
-    this.deepSeekService = new DeepSeekService(this.config);
-    this.memoryService = new MemoryService(this.repository, this.elasticsearchService, this.deepSeekService);
+    this.llmService = new LlmService(this.config);
+    this.memoryService = new MemoryService(this.repository, this.elasticsearchService, this.llmService);
     this.ttsService = new TtsService(this.config);
     this.mediaManager = new MediaManager(this.config);
 
@@ -75,10 +76,11 @@ export class AppRuntime {
       repository: this.repository,
       characterService: this.characterService,
       elasticsearchService: this.elasticsearchService,
-      deepSeekService: this.deepSeekService,
+      llmService: this.llmService,
       memoryService: this.memoryService,
       sseService: this.sseService,
       ttsService: this.ttsService,
+      readImageAsBase64: (relativePath) => this.readImageAsBase64(relativePath),
     };
   }
 
@@ -113,7 +115,7 @@ export class AppRuntime {
     return {
       appName: this.config.appName,
       datasetDir: this.config.datasetDir,
-      llmModel: this.config.deepseekModel,
+      llmModel: this.config.llmModel,
       esNode: this.config.esNode,
       dialogueIndex: this.config.esDialogueIndex,
       memoryIndex: this.config.esMemoryIndex,
@@ -168,7 +170,7 @@ export class AppRuntime {
 
     try {
       const speechTextJa = metadata.speechTextJa
-        ?? await this.deepSeekService.generateSpeechTextJa({
+        ?? await this.llmService.generateSpeechTextJa({
           characterName: character.displayName,
           selfAddress: character.promptProfile.selfAddress,
           content: message.content,
@@ -198,16 +200,18 @@ export class AppRuntime {
     return updated;
   }
 
-  /** 清空指定会话的消息，同时删除 ES 中关联的记忆。 */
+  /** 清空指定会话的消息，同时删除 ES 中关联的记忆和媒体文件（图片/音频）。 */
   async clearMessages(chatId: string): Promise<void> {
     await this.elasticsearchService.deleteMemoriesBySession(chatId);
     this.repository.clearMessages(chatId);
+    await this.mediaManager.cleanupChatMedia(chatId);
   }
 
-  /** 删除指定会话及其所有关联数据，同时删除 ES 中关联的记忆。 */
+  /** 删除指定会话及其所有关联数据，同时删除 ES 中关联的记忆和媒体文件（图片/音频）。 */
   async deleteChat(chatId: string): Promise<void> {
     await this.elasticsearchService.deleteMemoriesBySession(chatId);
     this.repository.deleteChat(chatId);
+    await this.mediaManager.cleanupChatMedia(chatId);
   }
 
   /** 创建新会话。 */
@@ -218,6 +222,22 @@ export class AppRuntime {
   /** 将媒体相对路径转为 file:// URL。 */
   resolveMediaUrl(relativePath: string): string {
     return pathToFileURL(path.join(this.config.mediaDir, relativePath)).href;
+  }
+
+  /** 读取媒体图片为 base64，用于多模态 LLM 图片理解。 */
+  async readImageAsBase64(relativePath: string): Promise<ImageInput | null> {
+    try {
+      const absolutePath = path.join(this.config.mediaDir, relativePath);
+      const buffer = await fs.readFile(absolutePath);
+      const ext = path.extname(relativePath).toLowerCase();
+      const mimeType = ext === ".png" ? "image/png"
+        : ext === ".webp" ? "image/webp"
+        : ext === ".gif" ? "image/gif"
+        : "image/jpeg";
+      return { mimeType, base64: buffer.toString("base64") };
+    } catch {
+      return null;
+    }
   }
 
   /** 重建 Elasticsearch 对话索引。 */
@@ -263,6 +283,13 @@ export class AppRuntime {
    * @returns 包含 jobId 和 streamUrl，前端据此订阅 SSE 事件
    */
   async sendMessage(request: ChatRequest, hooks: ChatJobHooks = {}): Promise<ChatSendResult> {
+    if (request.mode === "group") {
+      const count = request.participants.length;
+      if (count < 2 || count > 5) {
+        throw new Error(`群聊参与者数量必须在 2 到 5 人之间，当前为 ${count} 人。`);
+      }
+    }
+
     const chat = this.repository.getChat(request.chatId);
     if (!chat) {
       throw new Error("会话不存在，请先创建会话。");

@@ -4,7 +4,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ChatRepository } from "../src/backend/db/database";
 import { GroupChatCoordinator } from "../src/backend/graph/group-coordinator";
-import type { StructuredCompletionRequest } from "../src/backend/services/llm/deepseek-service";
+import type { StructuredCompletionRequest } from "../src/backend/services/llm/llm-service";
 import type { CharacterProfile } from "../src/common/types";
 
 function createCharacter(id: string): CharacterProfile {
@@ -63,7 +63,7 @@ function createDeps(repository: ChatRepository, mockReturn: Record<string, unkno
     elasticsearchService: {
       hybridSearch: vi.fn().mockResolvedValue([]),
     } as never,
-    deepSeekService: {
+    llmService: {
       streamStructuredCompletion: vi
         .fn()
         .mockImplementation(async ({ onToken }: StructuredCompletionRequest) => {
@@ -180,7 +180,7 @@ describe("GroupChatCoordinator", () => {
       elasticsearchService: {
         hybridSearch: vi.fn().mockResolvedValue([]),
       } as never,
-      deepSeekService: {
+      llmService: {
         streamStructuredCompletion: vi
           .fn()
           .mockImplementation(async ({ systemPrompt, onToken }: StructuredCompletionRequest) => {
@@ -244,7 +244,7 @@ describe("GroupChatCoordinator", () => {
       elasticsearchService: {
         hybridSearch: vi.fn().mockResolvedValue([]),
       } as never,
-      deepSeekService: {
+      llmService: {
         streamStructuredCompletion: vi
           .fn()
           .mockImplementation(async ({ systemPrompt, onToken }: StructuredCompletionRequest) => {
@@ -310,7 +310,7 @@ describe("GroupChatCoordinator", () => {
       elasticsearchService: {
         hybridSearch: vi.fn().mockResolvedValue([]),
       } as never,
-      deepSeekService: {
+      llmService: {
         streamStructuredCompletion: vi
           .fn()
           .mockImplementation(async () => {
@@ -394,7 +394,7 @@ describe("GroupChatCoordinator", () => {
       elasticsearchService: {
         hybridSearch: vi.fn().mockResolvedValue([]),
       } as never,
-      deepSeekService: {
+      llmService: {
         streamStructuredCompletion: vi
           .fn()
           .mockImplementation(async ({ systemPrompt, onToken }: StructuredCompletionRequest) => {
@@ -462,7 +462,7 @@ describe("GroupChatCoordinator", () => {
       elasticsearchService: {
         hybridSearch: vi.fn().mockResolvedValue([]),
       } as never,
-      deepSeekService: {
+      llmService: {
         streamStructuredCompletion: vi
           .fn()
           .mockImplementation(async ({ systemPrompt, onToken }: StructuredCompletionRequest) => {
@@ -531,7 +531,7 @@ describe("GroupChatCoordinator", () => {
       elasticsearchService: {
         hybridSearch: vi.fn().mockResolvedValue([]),
       } as never,
-      deepSeekService: {
+      llmService: {
         streamStructuredCompletion: vi
           .fn()
           .mockImplementation(async ({ systemPrompt, onToken }: StructuredCompletionRequest) => {
@@ -600,7 +600,7 @@ describe("GroupChatCoordinator", () => {
       elasticsearchService: {
         hybridSearch: vi.fn().mockResolvedValue([]),
       } as never,
-      deepSeekService: {
+      llmService: {
         streamStructuredCompletion: vi
           .fn()
           .mockImplementation(async ({ systemPrompt, onToken }: StructuredCompletionRequest) => {
@@ -668,7 +668,7 @@ describe("GroupChatCoordinator", () => {
       elasticsearchService: {
         hybridSearch: vi.fn().mockResolvedValue([]),
       } as never,
-      deepSeekService: {
+      llmService: {
         streamStructuredCompletion: vi
           .fn()
           .mockImplementation(async ({ systemPrompt, onToken }: StructuredCompletionRequest) => {
@@ -737,7 +737,7 @@ describe("GroupChatCoordinator", () => {
       elasticsearchService: {
         hybridSearch: vi.fn().mockResolvedValue([]),
       } as never,
-      deepSeekService: {
+      llmService: {
         streamStructuredCompletion: vi
           .fn()
           .mockImplementation(async ({ systemPrompt, onToken }: StructuredCompletionRequest) => {

@@ -7,7 +7,7 @@ import { createSingleChatGraph } from "../src/backend/graph/chat-graphs";
 import type {
   StructuredCompletionRequest,
   StructuredCompletionResult,
-} from "../src/backend/services/llm/deepseek-service";
+} from "../src/backend/services/llm/llm-service";
 import type { CharacterProfile, RetrievedDoc } from "../src/common/types";
 
 function createCharacter(id: string): CharacterProfile {
@@ -96,7 +96,7 @@ describe("createSingleChatGraph", () => {
       elasticsearchService: {
         hybridSearch: vi.fn().mockResolvedValue(retrievedDocs),
       } as never,
-      deepSeekService: {
+      llmService: {
         streamStructuredCompletion,
       } as never,
       memoryService: {
@@ -162,7 +162,7 @@ describe("createSingleChatGraph", () => {
       repository,
       characterService: {} as never,
       elasticsearchService: { hybridSearch } as never,
-      deepSeekService: {
+      llmService: {
         streamStructuredCompletion: vi.fn().mockImplementation(async ({ onToken }) => {
           await onToken("你好，我是芳乃。");
           return { content: "你好，我是芳乃。", speechTextJa: "こんにちは。", raw: "{}" };
@@ -248,7 +248,7 @@ describe("createSingleChatGraph", () => {
       repository,
       characterService: {} as never,
       elasticsearchService: { hybridSearch } as never,
-      deepSeekService: { streamStructuredCompletion } as never,
+      llmService: { streamStructuredCompletion } as never,
       memoryService: {
         recall: vi.fn().mockResolvedValue([]),
         getSummary: vi.fn().mockReturnValue(undefined),

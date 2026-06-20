@@ -18,7 +18,7 @@ import { ChatRepository } from "../src/backend/db/database";
 import { createSingleChatGraph, type GraphDependencies } from "../src/backend/graph/chat-graphs";
 import { CharacterService } from "../src/backend/services/characters/character-service";
 import { ElasticsearchService } from "../src/backend/services/es/elasticsearch-service";
-import { DeepSeekService } from "../src/backend/services/llm/deepseek-service";
+import { LlmService } from "../src/backend/services/llm/llm-service";
 import { MemoryService } from "../src/backend/services/memory/memory-service";
 import { SseService } from "../src/backend/services/stream/sse-service";
 import { TtsService } from "../src/backend/services/tts/tts-service";
@@ -95,7 +95,7 @@ async function main(): Promise<void> {
   const userDataPath = path.join(appRoot, ".web-data");
   const config = createAppConfig(appRoot, userDataPath);
 
-  if (!config.deepseekApiKey) { console.error("\u7F3A DEEPSEEK_API_KEY"); process.exit(1); }
+  if (!config.llmApiKey) { console.error("缺 LLM_API_KEY"); process.exit(1); }
   if (!config.esPassword) console.warn("ES 无密码，将跳过检索");
 
   const tracing = process.env.LANGSMITH_TRACING === "true" && !!process.env.LANGSMITH_API_KEY;
@@ -108,7 +108,7 @@ async function main(): Promise<void> {
   const sse = new SseService();
   const chars = new CharacterService(bc);
   const es = new ElasticsearchService(bc);
-  const llm = new DeepSeekService(bc);
+  const llm = new LlmService(bc);
   const mem = new MemoryService(repo, es, llm);
   const tts = new TtsService(bc);
 
@@ -118,7 +118,7 @@ async function main(): Promise<void> {
 
   let esOk = false;
   if (es.enabled) { esOk = await es.ping(); if (!esOk) console.warn("ES不可用，跳过检索"); }
-  console.log("\u89D2色: " + characters.length + "  ES: " + esOk + "  LLM: " + bc.deepseekModel + "  \u4E34时DB: " + tmpDb + "\n");
+  console.log("\u89D2色: " + characters.length + "  ES: " + esOk + "  LLM: " + bc.llmModel + "  \u4E34时DB: " + tmpDb + "\n");
 
   const tracer = tracing ? new LangChainTracer({ projectName: bc.langsmithProject }) : undefined;
   const timing = new NodeTiming();
@@ -134,7 +134,7 @@ async function main(): Promise<void> {
     const deps: GraphDependencies = {
       repository: repo, characterService: chars,
       elasticsearchService: es as never,
-      deepSeekService: llm as never,
+      llmService: llm as never,
       memoryService: mem as never,
       sseService: sse as never, ttsService: tts as never,
     };

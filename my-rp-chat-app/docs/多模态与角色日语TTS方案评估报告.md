@@ -31,7 +31,7 @@
   "speechTextJa": "今日は少し寒いですから..."
 }
 ```
-* **现状**：目前 `deepseekService.streamCompletion` 是直接把拿到的 token 推给 `sse-service`，前端直接追加渲染。
+* **现状**：目前 `llmService.streamCompletion` 是直接把拿到的 token 推给 `sse-service`，前端直接追加渲染。
 * **挑战**：如果 LLM 改为输出 JSON，你接收到的流将包含 `{"content": "` 这样的结构字符，不能直接推给前端，否则前端会看到 JSON 源码。
 * **解决建议**：在 `call_llm_stream` 节点中，你需要引入一个**流式 JSON 解析器**（或简单的正则状态机），只有当解析到 `content` 字段内的增量文本时，才触发 `token` 事件推送给前端。当整个 JSON 输出完毕后，再提取出完整的 `speechTextJa`，在 `save_message` 节点传递给 `TtsService`。
 

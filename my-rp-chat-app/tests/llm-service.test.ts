@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
-import { __internal } from "../src/backend/services/llm/deepseek-service";
+import { __internal } from "../src/backend/services/llm/llm-service";
 
-describe("deepseek structured parser", () => {
+describe("llm structured parser", () => {
   it("extracts incremental content from partial JSON", () => {
     const partial = "{\"content\":\"今天有点冷，你";
     expect(__internal.extractPartialJsonStringField(partial, "content")).toEqual({
@@ -50,15 +50,15 @@ vi.mock("openai", () => {
   };
 });
 
-describe("DeepSeekService.extractEpisodicMemory (regex fix)", () => {
+describe("LlmService.extractEpisodicMemory (regex fix)", () => {
   it("strips ```json fences and parses embedded JSON correctly", async () => {
     // 修复前：正则使用 \\s（字面量反斜杠+s）无法匹配 ```json\n 前缀
     // 修复后：使用 \s 正确匹配空白符，能剥离 ```json 围栏
-    const { DeepSeekService } = await import("../src/backend/services/llm/deepseek-service");
-    const service = new DeepSeekService({
-      deepseekApiKey: "test-key",
-      deepseekBaseUrl: "http://localhost",
-      deepseekModel: "test-model",
+    const { LlmService } = await import("../src/backend/services/llm/llm-service");
+    const service = new LlmService({
+      llmApiKey: "test-key",
+      llmBaseUrl: "http://localhost",
+      llmModel: "test-model",
     } as never);
 
     const mockResponse = {
@@ -86,11 +86,11 @@ describe("DeepSeekService.extractEpisodicMemory (regex fix)", () => {
   });
 
   it("returns safe defaults when LLM output is not valid JSON", async () => {
-    const { DeepSeekService } = await import("../src/backend/services/llm/deepseek-service");
-    const service = new DeepSeekService({
-      deepseekApiKey: "test-key",
-      deepseekBaseUrl: "http://localhost",
-      deepseekModel: "test-model",
+    const { LlmService } = await import("../src/backend/services/llm/llm-service");
+    const service = new LlmService({
+      llmApiKey: "test-key",
+      llmBaseUrl: "http://localhost",
+      llmModel: "test-model",
     } as never);
 
     (service as unknown as { client: { chat: { completions: { create: ReturnType<typeof vi.fn> } } } })
@@ -112,15 +112,15 @@ describe("DeepSeekService.extractEpisodicMemory (regex fix)", () => {
   });
 });
 
-describe("DeepSeekService.consolidateCoreMemory (prompt quality fix)", () => {
+describe("LlmService.consolidateCoreMemory (prompt quality fix)", () => {
   it("system prompt includes characterName, currentCore and JSON format requirement", async () => {
     // 修复前：system prompt 仅 "关系分析师。"，未使用 characterName 和 currentCore
     // 修复后：prompt 包含角色名、当前核心记忆、JSON 格式模板
-    const { DeepSeekService } = await import("../src/backend/services/llm/deepseek-service");
-    const service = new DeepSeekService({
-      deepseekApiKey: "test-key",
-      deepseekBaseUrl: "http://localhost",
-      deepseekModel: "test-model",
+    const { LlmService } = await import("../src/backend/services/llm/llm-service");
+    const service = new LlmService({
+      llmApiKey: "test-key",
+      llmBaseUrl: "http://localhost",
+      llmModel: "test-model",
     } as never);
 
     const createMock = (service as unknown as { client: { chat: { completions: { create: ReturnType<typeof vi.fn> } } } })
@@ -158,11 +158,11 @@ describe("DeepSeekService.consolidateCoreMemory (prompt quality fix)", () => {
   });
 
   it("parses valid JSON response with all fields", async () => {
-    const { DeepSeekService } = await import("../src/backend/services/llm/deepseek-service");
-    const service = new DeepSeekService({
-      deepseekApiKey: "test-key",
-      deepseekBaseUrl: "http://localhost",
-      deepseekModel: "test-model",
+    const { LlmService } = await import("../src/backend/services/llm/llm-service");
+    const service = new LlmService({
+      llmApiKey: "test-key",
+      llmBaseUrl: "http://localhost",
+      llmModel: "test-model",
     } as never);
 
     (service as unknown as { client: { chat: { completions: { create: ReturnType<typeof vi.fn> } } } })
@@ -190,11 +190,11 @@ describe("DeepSeekService.consolidateCoreMemory (prompt quality fix)", () => {
   });
 
   it("returns empty arrays for invalid JSON response", async () => {
-    const { DeepSeekService } = await import("../src/backend/services/llm/deepseek-service");
-    const service = new DeepSeekService({
-      deepseekApiKey: "test-key",
-      deepseekBaseUrl: "http://localhost",
-      deepseekModel: "test-model",
+    const { LlmService } = await import("../src/backend/services/llm/llm-service");
+    const service = new LlmService({
+      llmApiKey: "test-key",
+      llmBaseUrl: "http://localhost",
+      llmModel: "test-model",
     } as never);
 
     (service as unknown as { client: { chat: { completions: { create: ReturnType<typeof vi.fn> } } } })
@@ -213,5 +213,69 @@ describe("DeepSeekService.consolidateCoreMemory (prompt quality fix)", () => {
     expect(result.relationshipStage).toBe("");
     expect(result.relationshipNotes).toEqual([]);
     expect(result.keyFacts).toEqual([]);
+  });
+});
+
+// ============ 双模型切换测试 ============
+// 验证 streamStructuredCompletion 在有图片时使用 llmVisionModel，无图片时使用 llmModel。
+// 防止未来重构破坏多模态模型选择逻辑。
+
+describe("LlmService.streamStructuredCompletion (dual model switching)", () => {
+  it("uses llmVisionModel when images are provided", async () => {
+    const { LlmService } = await import("../src/backend/services/llm/llm-service");
+    const service = new LlmService({
+      llmApiKey: "test-key",
+      llmBaseUrl: "http://localhost",
+      llmModel: "qwen-plus",
+      llmVisionModel: "qwen-vl-plus",
+    } as never);
+
+    const createMock = (service as unknown as { client: { chat: { completions: { create: ReturnType<typeof vi.fn> } } } })
+      .client.chat.completions.create;
+    // mock 流式返回：返回一个 async iterable
+    createMock.mockResolvedValue({
+      async *[Symbol.asyncIterator]() {
+        yield { choices: [{ delta: { content: '{"content":"看到图片","speechTextJa":"画像を見た"}' } }] };
+      },
+    });
+
+    await service.streamStructuredCompletion({
+      systemPrompt: "系统提示",
+      userPrompt: "看图",
+      images: [{ mimeType: "image/png", base64: "aGVsbG8=" }],
+      onToken: () => {},
+    });
+
+    expect(createMock).toHaveBeenCalledTimes(1);
+    const callArgs = createMock.mock.calls[0][0];
+    expect(callArgs.model).toBe("qwen-vl-plus");
+  });
+
+  it("uses llmModel when no images are provided", async () => {
+    const { LlmService } = await import("../src/backend/services/llm/llm-service");
+    const service = new LlmService({
+      llmApiKey: "test-key",
+      llmBaseUrl: "http://localhost",
+      llmModel: "qwen-plus",
+      llmVisionModel: "qwen-vl-plus",
+    } as never);
+
+    const createMock = (service as unknown as { client: { chat: { completions: { create: ReturnType<typeof vi.fn> } } } })
+      .client.chat.completions.create;
+    createMock.mockResolvedValue({
+      async *[Symbol.asyncIterator]() {
+        yield { choices: [{ delta: { content: '{"content":"纯文本回复","speechTextJa":"テキストのみ"}' } }] };
+      },
+    });
+
+    await service.streamStructuredCompletion({
+      systemPrompt: "系统提示",
+      userPrompt: "你好",
+      onToken: () => {},
+    });
+
+    expect(createMock).toHaveBeenCalledTimes(1);
+    const callArgs = createMock.mock.calls[0][0];
+    expect(callArgs.model).toBe("qwen-plus");
   });
 });

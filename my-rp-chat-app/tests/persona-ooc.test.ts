@@ -6,7 +6,7 @@ import { ChatRepository } from "../src/backend/db/database";
 import { createSingleChatGraph } from "../src/backend/graph/chat-graphs";
 import { CharacterService } from "../src/backend/services/characters/character-service";
 import type { AppConfig } from "../src/config";
-import type { StructuredCompletionRequest } from "../src/backend/services/llm/deepseek-service";
+import type { StructuredCompletionRequest } from "../src/backend/services/llm/llm-service";
 
 /**
  * 角色人设 OOC 修正验证测试。
@@ -66,7 +66,7 @@ async function runSingleChat(
     elasticsearchService: {
       hybridSearch: vi.fn().mockResolvedValue([]),
     } as never,
-    deepSeekService: {
+    llmService: {
       streamStructuredCompletion: vi.fn().mockImplementation(
         async ({ systemPrompt, onToken }: StructuredCompletionRequest) => {
           capturedSystemPrompt = systemPrompt;

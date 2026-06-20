@@ -5,7 +5,7 @@
     "license":  "MIT",
     "type":  "module",
     "scripts":  {
-                    "dev":  "concurrently -k \"tsx watch src/server/index.ts\" \"vite\"",
+                    "dev":  "concurrently --raw -k \"tsx watch src/server/index.ts\" \"vite\"",
                     "dev:server":  "tsx watch src/server/index.ts",
                     "dev:client":  "vite",
                     "build":  "tsc --noEmit && vite build",

@@ -16,7 +16,7 @@ export interface ConfigValidationWarning {
  * 校验应用运行所需的关键环境变量。
  *
  * 检查项包括：
- * - DeepSeek API Key 是否配置
+ * - LLM API Key 是否配置
  * - Elasticsearch TLS 证书校验是否关闭（生产环境安全风险）
  * - Elasticsearch 密码强度
  * - LangSmith 追踪是否启用但未配置 API Key
@@ -28,10 +28,10 @@ export interface ConfigValidationWarning {
 export function validateAppConfig(): ConfigValidationWarning[] {
   const warnings: ConfigValidationWarning[] = [];
 
-  if (!process.env.DEEPSEEK_API_KEY) {
+  if (!process.env.LLM_API_KEY) {
     warnings.push({
-      key: "DEEPSEEK_API_KEY",
-      message: "未配置 DeepSeek API Key，LLM 对话功能将不可用",
+      key: "LLM_API_KEY",
+      message: "未配置 LLM API Key，LLM 对话功能将不可用",
       severity: "error",
     });
   }

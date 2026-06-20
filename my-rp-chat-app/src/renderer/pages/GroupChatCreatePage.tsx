@@ -1,4 +1,4 @@
-﻿import { useState } from "react";
+import { useState } from "react";
 import { motion } from "framer-motion";
 import { MessageSquarePlus } from "lucide-react";
 import { useBootstrapContext } from "../context/BootstrapContext";
@@ -13,7 +13,11 @@ export function GroupChatCreatePage() {
   const toggle = (id: string) => {
     setSelected((prev) => {
       const next = new Set(prev);
-      if (next.has(id)) next.delete(id); else next.add(id);
+      if (next.has(id)) {
+        next.delete(id);
+      } else if (next.size < 5) {
+        next.add(id);
+      }
       return next;
     });
   };
@@ -26,14 +30,14 @@ export function GroupChatCreatePage() {
         <div>
           <motion.h2 initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }}>创建群聊</motion.h2>
           <motion.p initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.1 }}>
-            选择 2 个或更多角色开始群聊
+            选择 2 到 5 个角色开始群聊
           </motion.p>
         </div>
         <motion.button
           initial={{ opacity: 0, scale: 0.9 }}
           animate={{ opacity: 1, scale: 1 }}
           className="primary-button"
-          disabled={selected.size < 2}
+          disabled={selected.size < 2 || selected.size > 5}
           onClick={handleCreate}
         >
           <MessageSquarePlus size={18} />创建群聊（{selected.size} 人）

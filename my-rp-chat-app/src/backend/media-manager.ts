@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 媒体资源管理器
  *
  * 负责附件持久化、媒体路径解析、文件操作。
@@ -56,5 +56,23 @@ export class MediaManager {
   /** 将媒体相对路径转为 file:// URL。 */
   resolveMediaUrl(relativePath: string): string {
     return pathToFileURL(path.join(this.config.mediaDir, relativePath)).href;
+  }
+
+  /**
+   * 清理指定会话的所有媒体文件（图片和音频）。
+   * 按 chatId 分目录存储，直接删除 images/{chatId} 和 audio/{chatId} 两个目录。
+   * 尽力而为：即使文件删除失败也不抛出，仅记录警告，避免阻塞会话清理。
+   */
+  async cleanupChatMedia(chatId: string): Promise<void> {
+    const subDirs = ["images", "audio"].map((sub) => path.join(this.config.mediaDir, sub, chatId));
+    await Promise.all(
+      subDirs.map(async (dir) => {
+        try {
+          await fs.rm(dir, { recursive: true, force: true });
+        } catch (error) {
+          console.warn(`[MediaManager] 清理媒体目录失败 ${dir}:`, error);
+        }
+      }),
+    );
   }
 }

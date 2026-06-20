@@ -84,7 +84,7 @@
 npm install
 
 # 配置环境变量
-cp .env.example .env
+cp .env.example .env  # Linux/macOS（Windows 请使用: copy .env.example .env）
 # 编辑 .env 填入 DEEPSEEK_API_KEY 等必填项
 
 # 构建对话索引（首次运行前必须执行）
@@ -104,17 +104,63 @@ npm run dev:client
 
 ### 环境变量说明
 
-| 变量 | 必填 | 说明 |
-| --- | --- | --- |
-| DEEPSEEK_API_KEY | 是 | DeepSeek API 密钥 |
-| DEEPSEEK_BASE_URL | 否 | 默认为 https://api.deepseek.com |
-| DEEPSEEK_MODEL | 否 | 默认为 deepseek-chat |
-| ES_NODE | 否 | ES 地址，不填则禁用 ES |
-| ES_PASSWORD | 否 | ES 密码 |
-| OLLAMA_HOST | 否 | 默认为 http://127.0.0.1:11434 |
-| OLLAMA_MODEL_NAME | 否 | 默认为 bge-m3:latest |
-| TTS_PROVIDER | 否 | disabled / openai-compatible / qwen-cosyvoice |
-| LANGSMITH_TRACING | 否 | 设为 true 启用 LangSmith 追踪 |
+> 所有配置均通过环境变量读取，将 `.env.example` 复制为 `.env` 后编辑。Windows 请使用 `copy .env.example .env`。
+
+#### DeepSeek / LLM
+
+| 变量 | 必填 | 默认值 | 说明 |
+| --- | :---: | --- | --- |
+| DEEPSEEK_API_KEY | 是 | — | DeepSeek API 密钥 |
+| DEEPSEEK_BASE_URL | 否 | https://api.deepseek.com | API 端点，可切换为其他 OpenAI 兼容服务 |
+| DEEPSEEK_MODEL | 否 | deepseek-chat | 模型名称 |
+
+#### Elasticsearch
+
+| 变量 | 必填 | 默认值 | 说明 |
+| --- | :---: | --- | --- |
+| ES_NODE | 否 | https://127.0.0.1:9200/ | ES 节点地址，不填则禁用 ES 检索 |
+| ES_USERNAME | 否 | elastic | ES 用户名（ES 启用时必填） |
+| ES_PASSWORD | 否 | — | ES 密码（ES 启用时必填） |
+| ES_DIALOGUE_INDEX | 否 | senren_dialogues | 对话检索索引名 |
+| ES_MEMORY_INDEX | 否 | senren_memories | 长期记忆索引名 |
+| ES_TLS_REJECT_UNAUTHORIZED | 否 | true | 是否验证 ES TLS 证书，自签名证书可设为 false |
+
+#### Ollama / Embedding
+
+| 变量 | 必填 | 默认值 | 说明 |
+| --- | :---: | --- | --- |
+| OLLAMA_HOST | 否 | http://127.0.0.1:11434 | Ollama 服务地址 |
+| OLLAMA_MODEL_NAME | 否 | bge-m3:latest | Embedding 模型名称 |
+| EMBEDDING_DIMENSIONS | 否 | 1024 | 向量维度，需与模型匹配 |
+
+#### TTS 语音合成
+
+| 变量 | 必填 | 默认值 | 说明 |
+| --- | :---: | --- | --- |
+| TTS_PROVIDER | 否 | disabled | disabled / openai-compatible / qwen-cosyvoice |
+| TTS_API_KEY | 否 | — | TTS 服务 API 密钥 |
+| TTS_BASE_URL | 否 | — | TTS 服务地址 |
+| TTS_MODEL | 否 | — | TTS 模型名称 |
+| TTS_DEFAULT_VOICE | 否 | — | 默认音色 |
+| TTS_CHARACTER_VOICE_MAP | 否 | — | 角色音色映射 JSON，如 {"丛雨": "voice_1"} |
+
+#### LangSmith 可观测性
+
+| 变量 | 必填 | 默认值 | 说明 |
+| --- | :---: | --- | --- |
+| LANGSMITH_TRACING | 否 | false | 设为 true 启用 LangSmith 追踪 |
+| LANGSMITH_API_KEY | 否 | — | LangSmith API 密钥 |
+| LANGSMITH_PROJECT | 否 | senren-talk | LangSmith 项目名 |
+| LANGSMITH_ENDPOINT | 否 | https://api.smith.langchain.com | LangSmith 端点 |
+
+#### 运行时 / 存储
+
+| 变量 | 必填 | 默认值 | 说明 |
+| --- | :---: | --- | --- |
+| SQLITE_PATH | 否 | — | SQLite 数据库路径，不填则使用默认数据目录 |
+| MEDIA_DIR | 否 | — | 媒体文件存储目录，不填则使用默认数据目录 |
+| DATASET_DIR | 否 | ../索引数据 | 数据集目录 |
+| TOP_K | 否 | 8 | RAG 检索返回 top-K 条数 |
 
 ## 项目结构
 
@@ -292,6 +338,14 @@ START → [1] prepare_turn → [2] retrieve_context → [3] retrieve_memory
 
 **Q: 附件上传失败？**
 确认文件大小不超过 5MB，MIME 类型在白名单内，单次不超过 6 个文件。
+
+## 数据来源
+
+本项目中的角色设定、对话语料与剧情参考来源于《千恋万花》（Senren \* Banka），该游戏由 **Yuzusoft（柚子社）** 开发。
+
+相关数据仅用于技术学习与演示目的，不涉及任何商业用途。所有角色、场景、对话等内容的知识产权归原版权方 Yuzusoft 所有。
+
+---
 
 ## License
 
