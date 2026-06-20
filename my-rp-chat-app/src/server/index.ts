@@ -1,4 +1,4 @@
-﻿﻿import express from "express";
+﻿import express from "express";
 import multer from "multer";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -219,12 +219,13 @@ async function main(): Promise<void> {
   });
 
   // ── 文件上传路由 ─────────────────────
-  // 先用 createUploadValidator 做前置校验，再交给 multer 处理
+  // multer 先解析文件，再由 createUploadValidator 校验大小/数量/MIME 类型
+  // 顺序不能颠倒：校验器依赖 request.files，而 multer 之前该字段为 undefined
 
   app.post(
     "/api/chats/:chatId/send",
-    createUploadValidator(),
     upload.array("files"),
+    createUploadValidator(),
     async (request, response) => {
       const uploadedFiles = (request.files as Express.Multer.File[] | undefined) ?? [];
       try {

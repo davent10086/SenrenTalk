@@ -344,7 +344,7 @@ export class ElasticsearchService {
     const topK = filters.topK ?? this.config.topK;
     const candidateSize = topK * 3;
     const commonFilters = buildFilters(filters, false);
-    // 方案一：过滤高频标签，避免噪声匹配
+    // 过滤高频标签，避免噪声匹配
     const tagTerms = [
       ...(filters.tags?.scene ?? []),
       ...(filters.tags?.emotion ?? []),
@@ -356,44 +356,16 @@ export class ElasticsearchService {
     const queryVector = await this.tryEmbed(query, "dialogue-search");
 
     // 三路并行检索
-    const densePromise = Promise.resolve(queryVector)
-      .then((queryVector) =>
-        queryVector
-          ? this.client!.search<Record<string, unknown>>({
-              index: this.config.esDialogueIndex,
-              size: candidateSize,
-              knn: {
-                field: "dense_vector" as const,
-                query_vector: queryVector,
-                k: candidateSize,
-                num_candidates: candidateSize * 10,
-                ...(commonFilters.length > 0 ? { filter: { bool: { filter: commonFilters } } } : {}),
-              } satisfies estypes.KnnQuery,
-            })
-          : { hits: { hits: [] as Array<{ _score?: number | null; _source?: Record<string, unknown> }> } },
-      );
-
-    const bm25Promise = this.client!.search<Record<string, unknown>>({
-      index: this.config.esDialogueIndex, size: candidateSize,
-      query: { bool: { filter: commonFilters, must: [{ multi_match: { query, fields: ["text^2", "text_norm", "all_tags"] } }] } },
-    });
-
-    const tagPromise = tagTerms.length > 0
-      ? this.client!.search<Record<string, unknown>>({
-          index: this.config.esDialogueIndex, size: candidateSize,
-          query: { bool: { filter: commonFilters, should: tagTerms.map((t) => ({ term: { all_tags: t } })), minimum_should_match: Math.min(2, tagTerms.length) } },
-        })
-      : Promise.resolve({ hits: { hits: [] as Array<{ _score?: number | null; _source?: Record<string, unknown> }> } });
-
-    // 三路并行等待
-    const [denseResults, bm25Results, tagResults] = await Promise.all([densePromise, bm25Promise, tagPromise]);
+    const [denseResults, bm25Results, tagResults] = await Promise.all([
+      this.runDenseQuery(this.config.esDialogueIndex, queryVector, candidateSize, commonFilters, false),
+      this.runBm25Query(this.config.esDialogueIndex, query, candidateSize, ["text^2", "text_norm", "all_tags"], commonFilters, false),
+      tagTerms.length > 0
+        ? this.runTagQuery(this.config.esDialogueIndex, tagTerms, candidateSize, commonFilters)
+        : Promise.resolve([]),
+    ]);
 
     // 三路单次 RRF 融合
-    const fused = rrfFuse(
-      [mapHits(denseResults.hits.hits), mapHits(bm25Results.hits.hits), mapHits(tagResults.hits.hits)],
-      candidateSize,
-    );
-
+    const fused = rrfFuse([denseResults, bm25Results, tagResults], candidateSize);
     return this.rerankByEmbedding(query, fused, topK, queryVector);
   }
 
@@ -466,8 +438,9 @@ export class ElasticsearchService {
 
   /**
    * 通用混合查询：执行 dense (kNN) + BM25 双路检索并 RRF 融合。
+   * 复用 {@link runDenseQuery} 和 {@link runBm25Query}，与 {@link hybridSearch} 共享单路查询逻辑。
    */
-  
+
   private async runHybridQuery(
     query: string,
     index: string,
@@ -479,29 +452,81 @@ export class ElasticsearchService {
   ): Promise<RetrievedDoc[]> {
     const queryVector = precomputedQueryVector ?? await this.tryEmbed(query, isMemory ? "memory-search" : "dialogue-search");
 
-    const denseResults = queryVector
-      ? await this.client!.search<Record<string, unknown>>({
-          index,
-          size: topK,
-          knn: {
-            field: "dense_vector" as const,
-            query_vector: queryVector,
-            k: topK,
-            num_candidates: topK * 10,
-            ...(filterClauses.length > 0 ? { filter: { bool: { filter: filterClauses } } } : {}),
-          } satisfies estypes.KnnQuery,
-        })
-      : { hits: { hits: [] as Array<{ _score?: number | null; _source?: Record<string, unknown> }> } };
+    const [denseResults, bm25Results] = await Promise.all([
+      this.runDenseQuery(index, queryVector, topK, filterClauses, isMemory),
+      this.runBm25Query(index, query, topK, bm25Fields, filterClauses, isMemory),
+    ]);
 
-    const bm25Results = await this.client!.search<Record<string, unknown>>({
-      index, size: topK,
+    return rrfFuse([denseResults, bm25Results], topK * 2);
+  }
+
+  /**
+   * 执行单路稠密向量（kNN）检索。queryVector 为 null 时返回空数组。
+   */
+  private async runDenseQuery(
+    index: string,
+    queryVector: number[] | null,
+    size: number,
+    filterClauses: Array<Record<string, unknown>>,
+    isMemory: boolean,
+  ): Promise<RetrievedDoc[]> {
+    if (!queryVector) {
+      return [];
+    }
+    const results = await this.client!.search<Record<string, unknown>>({
+      index,
+      size,
+      knn: {
+        field: "dense_vector" as const,
+        query_vector: queryVector,
+        k: size,
+        num_candidates: size * 10,
+        ...(filterClauses.length > 0 ? { filter: { bool: { filter: filterClauses } } } : {}),
+      } satisfies estypes.KnnQuery,
+    });
+    return mapHits(results.hits.hits, isMemory);
+  }
+
+  /**
+   * 执行单路 BM25 文本匹配检索。
+   */
+  private async runBm25Query(
+    index: string,
+    query: string,
+    size: number,
+    bm25Fields: string[],
+    filterClauses: Array<Record<string, unknown>>,
+    isMemory: boolean,
+  ): Promise<RetrievedDoc[]> {
+    const results = await this.client!.search<Record<string, unknown>>({
+      index,
+      size,
       query: { bool: { filter: filterClauses, must: [{ multi_match: { query, fields: bm25Fields } }] } },
     });
+    return mapHits(results.hits.hits, isMemory);
+  }
 
-    return rrfFuse(
-      [mapHits(denseResults.hits.hits, isMemory), mapHits(bm25Results.hits.hits, isMemory)],
-      topK * 2,
-    );
+  /**
+   * 执行单路标签匹配检索（仅用于对话索引的 tag-aware 召回）。
+   */
+  private async runTagQuery(
+    index: string,
+    tagTerms: string[],
+    size: number,
+    filterClauses: Array<Record<string, unknown>>,
+  ): Promise<RetrievedDoc[]> {
+    const results = await this.client!.search<Record<string, unknown>>({
+      index,
+      size,
+      query: {
+        bool: {
+          filter: filterClauses,
+          should: tagTerms.map((t) => ({ term: { all_tags: t } })),
+          minimum_should_match: Math.min(2, tagTerms.length),
+        },
+      },
+    });
+    return mapHits(results.hits.hits);
   }
 
   /**
@@ -574,7 +599,19 @@ export class ElasticsearchService {
   async indexCoreMemory(core: CoreMemory): Promise<void> {
     if (!this.client) { return; }
     await this.ensureCoreMemoryIndex();
-    const denseVector = await this.tryEmbed(JSON.stringify(core.keyFacts), "core-memory-index");
+    // 构建语义化文本用于 embedding，包含关系阶段、用户画像和关键事实，
+    // 比 JSON.stringify(keyFacts) 能更准确地捕捉核心记忆语义，提升检索召回率
+    const embeddingText = [
+      core.relationshipStage ? `关系阶段：${core.relationshipStage}` : "",
+      core.userPreferences.length > 0 ? `用户偏好：${core.userPreferences.join("、")}` : "",
+      core.userTraits.length > 0 ? `用户特质：${core.userTraits.join("、")}` : "",
+      core.relationshipNotes.length > 0 ? `关系备注：${core.relationshipNotes.join("、")}` : "",
+      core.keyFacts.length > 0 ? `关键事实：${core.keyFacts.join("、")}` : "",
+    ].filter(Boolean).join("\n");
+    const denseVector = await this.tryEmbed(
+      embeddingText || core.relationshipStage || core.character,
+      "core-memory-index",
+    );
     await this.client.index({
       index: this.config.esMemoryIndex,
       id: "core_" + core.id,
