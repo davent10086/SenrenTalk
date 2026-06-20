@@ -32,9 +32,9 @@
 
 ## 运行截图
 
-| 角色选择 | 个人对话 | 群聊场景 |
-| :---: | :---: | :---: |
-| ![角色列表](my-rp-chat-app/public/运行截图/角色列表.png) | ![个人聊天](my-rp-chat-app/public/运行截图/个人聊天.png) | ![群聊截图](my-rp-chat-app/public/运行截图/群聊截图.png) |
+| 角色选择 | 个人对话 | 群聊创建 | 群聊场景 |
+| :---: | :---: | :---: | :---: |
+| ![角色列表](my-rp-chat-app/public/运行截图/角色列表.png) | ![个人聊天](my-rp-chat-app/public/运行截图/个人聊天.png) | ![群聊创建页面](my-rp-chat-app/public/运行截图/群聊创建页面.png) | ![群聊截图](my-rp-chat-app/public/运行截图/群聊截图.png) |
 
 ---
 
