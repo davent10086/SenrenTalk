@@ -5,7 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ChatRepository } from "../src/backend/db/database";
 import { createSingleChatGraph } from "../src/backend/graph/chat-graphs";
 import { CharacterService } from "../src/backend/services/characters/character-service";
-import type { AppConfig } from "../src/config";
+import type { AppConfig } from "../src/backend/config";
 import type { StructuredCompletionRequest } from "../src/backend/services/llm/llm-service";
 
 /**
