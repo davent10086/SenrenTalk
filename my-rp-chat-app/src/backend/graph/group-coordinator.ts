@@ -2,12 +2,14 @@ import { type LangChainTracer } from "@langchain/core/tracers/tracer_langchain";
 import { createSingleChatGraph, type ChatGraphState, type GraphDependencies } from "./chat-graphs";
 import type { ChatMessage, ChatMode } from "../../common/types";
 
-/** 群聊模式下默认最大生成消息数，防止无限循环。 */
+/** 群聊模式下默认最大生成消息数（上限，实际按参与者数量动态收紧）。 */
 const DEFAULT_MAX_MESSAGES = 15;
 /** 默认最大轮次数（每轮每个角色至少发言一次）。 */
-const DEFAULT_MAX_ROUNDS = 3;
+const DEFAULT_MAX_ROUNDS = 2;
 /** 连续多少轮无人发言则自动退出。 */
 const DEFAULT_IDLE_STREAK_THRESHOLD = 2;
+/** 角色间发言的最小间隔（毫秒），避免消息密集推送造成信息过载。 */
+const TURN_BREATHING_DELAY_MS = 500;
 
 /**
  * 群聊协调器。
@@ -25,23 +27,27 @@ export class GroupChatCoordinator {
   private readonly maxMessages: number;
   private readonly maxRounds: number;
   private readonly idleStreakThreshold: number;
+  private readonly breathingDelayMs: number;
 
   /**
    * @param deps                 图执行依赖
-   * @param maxMessages          本轮会话最大生成消息数（默认 15）
-   * @param maxRounds            最大轮次数，每轮至少一轮所有角色发言（默认 3）
+   * @param maxMessages          本轮会话最大生成消息数（默认 15，实际按参与者数量动态收紧）
+   * @param maxRounds            最大轮次数，每轮至少一轮所有角色发言（默认 2）
    * @param idleStreakThreshold 连续多少轮无人发言则自动退出（默认 2）
+   * @param breathingDelayMs    角色间发言的最小间隔毫秒数，避免信息过载（默认 500）
    */
   constructor(
     deps: GraphDependencies,
     maxMessages = DEFAULT_MAX_MESSAGES,
     maxRounds = DEFAULT_MAX_ROUNDS,
     idleStreakThreshold = DEFAULT_IDLE_STREAK_THRESHOLD,
+    breathingDelayMs = TURN_BREATHING_DELAY_MS,
   ) {
     this.deps = deps;
     this.maxMessages = maxMessages;
     this.maxRounds = maxRounds;
     this.idleStreakThreshold = idleStreakThreshold;
+    this.breathingDelayMs = breathingDelayMs;
   }
 
   /** 懒加载创建或获取指定角色的 agent 图实例。 */
@@ -82,6 +88,8 @@ export class GroupChatCoordinator {
       `群聊参与者：${participants.join("、")}`,
       `你的名字是 ${roleId}。`,
       `这是第 ${turnCount + 1} 轮对话。`,
+      // 群聊长度约束：避免每个角色长篇大论导致信息过载
+      `群聊中应简短回应（1-3 句），聚焦当前角色视角，避免长篇大论。`,
     ];
 
     if (mentionTarget) {
@@ -238,6 +246,10 @@ export class GroupChatCoordinator {
     // 注册所有参与者 agent（懒初始化）
     participants.forEach((p) => this.getOrCreateAgent(p));
 
+    // 动态密度控制：角色越多，单轮消息预算越紧（人均 2 条上限），
+    // 避免 5 角色场景下 15 条消息连续推送造成信息过载。
+    const effectiveMaxMessages = Math.min(this.maxMessages, participants.length * 2);
+
     let sharedHistory = [...messages];
     let generatedCount = 0;
     let turnCount = 0;
@@ -304,7 +316,7 @@ export class GroupChatCoordinator {
     // 跟踪本轮是否有任何 agent 指定了 nextSpeaker
     let roundHasNextSpeaker = false;
 
-    while (generatedCount < this.maxMessages) {
+    while (generatedCount < effectiveMaxMessages) {
       // 一轮结束：所有参与者都发言完毕
       if (unspoken.size === 0) {
         // 检查 idleStreak：本轮没有任何 agent 指定 nextSpeaker 则递增
@@ -332,6 +344,11 @@ export class GroupChatCoordinator {
 
       const speaker = resolveNextSpeaker(nextSpeaker, unspoken);
       if (!speaker) break;
+
+      // 角色间呼吸延迟：避免消息密集推送造成信息过载，给用户阅读时间
+      if (this.breathingDelayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, this.breathingDelayMs));
+      }
 
       try {
         const result = await this.runAgentTurn({

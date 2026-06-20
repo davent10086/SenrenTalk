@@ -102,6 +102,9 @@ describe("GroupChatCoordinator", () => {
         raw: "{}",
       }),
       4, // maxMessages for fast test
+      undefined,
+      undefined,
+      0, // 跳过呼吸延迟，加速测试
     );
 
     await coordinator.runSession({
@@ -139,6 +142,9 @@ describe("GroupChatCoordinator", () => {
         raw: "{}",
       }),
       3,
+      undefined,
+      undefined,
+      0,
     );
 
     await coordinator.runSession({
@@ -208,7 +214,7 @@ describe("GroupChatCoordinator", () => {
       } as never,
     };
 
-    const coordinator = new GroupChatCoordinator(deps, 4);
+    const coordinator = new GroupChatCoordinator(deps, 4, undefined, undefined, 0);
     await coordinator.runSession({
       chatId: chat.id,
       streamId: "stream-test",
@@ -271,7 +277,7 @@ describe("GroupChatCoordinator", () => {
       } as never,
     };
 
-    const coordinator = new GroupChatCoordinator(deps, 4);
+    const coordinator = new GroupChatCoordinator(deps, 4, undefined, undefined, 0);
     await coordinator.runSession({
       chatId: chat.id,
       streamId: "stream-test",
@@ -330,7 +336,7 @@ describe("GroupChatCoordinator", () => {
       } as never,
     };
 
-    const coordinator = new GroupChatCoordinator(deps, 4);
+    const coordinator = new GroupChatCoordinator(deps, 4, undefined, undefined, 0);
 
     // 验证 runSession 不抛异常、不挂起（vitest 默认 5s 超时会捕获挂起）
     await expect(
@@ -424,7 +430,7 @@ describe("GroupChatCoordinator", () => {
     };
 
     // maxMessages=3, maxRounds=1：一轮内 3 个角色都应能发言
-    const coordinator = new GroupChatCoordinator(deps, 3, 1, 2);
+    const coordinator = new GroupChatCoordinator(deps, 3, 1, 2, 0);
     await coordinator.runSession({
       chatId: chat.id,
       streamId: "stream-test",
@@ -484,9 +490,10 @@ describe("GroupChatCoordinator", () => {
       } as never,
     };
 
-    // maxMessages=20 (足够大), maxRounds=10 (足够大), idleStreakThreshold=2
-    // 2 角色 × 2 轮 = 4 条消息后，连续 2 轮无 nextSpeaker，应退出
-    const coordinator = new GroupChatCoordinator(deps, 20, 10, 2);
+    // maxMessages=20 (足够大), maxRounds=10 (足够大), idleStreakThreshold=1
+    // 动态密度控制下 effectiveMaxMessages=min(20, 2*2)=4，但 idleStreak=1
+    // 会在第 1 轮结束后立即触发（2 条消息），先于 effectiveMaxMessages 退出
+    const coordinator = new GroupChatCoordinator(deps, 20, 10, 1, 0);
     await coordinator.runSession({
       chatId: chat.id,
       streamId: "stream-test",
@@ -499,8 +506,8 @@ describe("GroupChatCoordinator", () => {
       .listMessages(chat.id)
       .filter((m) => m.role === "assistant");
 
-    // 连续 2 轮无 nextSpeaker 后退出：2 角色 × 2 轮 = 4 条消息
-    expect(assistantMessages.length).toBe(4);
+    // 连续 1 轮无 nextSpeaker 后退出：2 角色 × 1 轮 = 2 条消息
+    expect(assistantMessages.length).toBe(2);
     // 等待 fire-and-forget 的 processMemories 完成，避免关闭数据库时文件锁定
     await new Promise((resolve) => setTimeout(resolve, 100));
     repository.close();
@@ -560,7 +567,7 @@ describe("GroupChatCoordinator", () => {
     };
 
     // maxMessages=3 让对话快速结束，然后 processMemories 被触发
-    const coordinator = new GroupChatCoordinator(deps, 3, 1, 2);
+    const coordinator = new GroupChatCoordinator(deps, 3, 1, 2, 0);
     await coordinator.runSession({
       chatId: chat.id,
       streamId: "stream-test",
@@ -628,7 +635,7 @@ describe("GroupChatCoordinator", () => {
     };
 
     // maxRounds=1：一轮内 丛雨 失败、芳乃 正常发言
-    const coordinator = new GroupChatCoordinator(deps, 4, 1, 2);
+    const coordinator = new GroupChatCoordinator(deps, 4, 1, 2, 0);
     await coordinator.runSession({
       chatId: chat.id,
       streamId: "stream-test",
@@ -693,7 +700,7 @@ describe("GroupChatCoordinator", () => {
       } as never,
     };
 
-    const coordinator = new GroupChatCoordinator(deps, 4, 1, 2);
+    const coordinator = new GroupChatCoordinator(deps, 4, 1, 2, 0);
     await coordinator.runSession({
       chatId: chat.id,
       streamId: "stream-test",
@@ -765,7 +772,7 @@ describe("GroupChatCoordinator", () => {
     };
 
     // maxRounds=1：3 角色各发言一次，丛雨 失败
-    const coordinator = new GroupChatCoordinator(deps, 6, 1, 2);
+    const coordinator = new GroupChatCoordinator(deps, 6, 1, 2, 0);
     await coordinator.runSession({
       chatId: chat.id,
       streamId: "stream-test",
@@ -783,6 +790,77 @@ describe("GroupChatCoordinator", () => {
     // 芳乃 和 茉子 应各有消息
     expect(assistantMessages.some((m) => m.roleId === "芳乃")).toBe(true);
     expect(assistantMessages.some((m) => m.roleId === "茉子")).toBe(true);
+
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    repository.close();
+  });
+
+  it("applies dynamic density control: maxMessages = min(configured, participants × 2)", async () => {
+    // 验证动态密度控制：5 角色场景下 effectiveMaxMessages = min(15, 5×2) = 10，
+    // 而非配置的 15。避免角色越多消息越多的信息过载问题。
+    const tempDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "rp-chat-density-"));
+    createdDirectories.push(tempDirectory);
+
+    const repository = new ChatRepository(path.join(tempDirectory, "test.sqlite"));
+    repository.init();
+    repository.upsertCharacters([
+      createCharacter("丛雨"),
+      createCharacter("芳乃"),
+      createCharacter("茉子"),
+      createCharacter("蕾娜"),
+      createCharacter("诗织"),
+    ]);
+    const chat = repository.createChat("group", ["丛雨", "芳乃", "茉子", "蕾娜", "诗织"], "测试群聊");
+    repository.appendMessage({ chatId: chat.id, role: "user", content: "大家好" });
+
+    // 所有角色都不指定 nextSpeaker，让对话靠 effectiveMaxMessages 和 maxRounds 自然终止
+    const deps = {
+      repository,
+      characterService: {} as never,
+      elasticsearchService: {
+        hybridSearch: vi.fn().mockResolvedValue([]),
+      } as never,
+      llmService: {
+        streamStructuredCompletion: vi
+          .fn()
+          .mockImplementation(async ({ systemPrompt, onToken }: StructuredCompletionRequest) => {
+            const selfAddress = extractSelfAddress(systemPrompt);
+            const content = `${selfAddress}回应`;
+            await onToken(content);
+            return { content, speechTextJa: "", raw: "{}" };
+          }),
+      } as never,
+      memoryService: {
+        recall: vi.fn().mockResolvedValue([]),
+        getSummary: vi.fn().mockReturnValue(undefined),
+        getCoreMemory: vi.fn().mockReturnValue(null),
+        extractAndPersist: vi.fn().mockResolvedValue(null),
+        consolidateCoreMemory: vi.fn().mockResolvedValue(null),
+      } as never,
+      sseService: {
+        publish: vi.fn(),
+      } as never,
+    };
+
+    // 默认 maxMessages=15, maxRounds=2, idleStreakThreshold=2
+    // 5 角色 × 2 = 10 → effectiveMaxMessages=10
+    // 第 1 轮：5 条消息（idleStreak=1）
+    // 第 2 轮：5 条消息（共 10 条，idleStreak=2 触发退出，effectiveMaxMessages 同时达到）
+    const coordinator = new GroupChatCoordinator(deps, undefined, undefined, undefined, 0);
+    await coordinator.runSession({
+      chatId: chat.id,
+      streamId: "stream-test",
+      participants: ["丛雨", "芳乃", "茉子", "蕾娜", "诗织"],
+      mentionTarget: null,
+      messages: repository.listMessages(chat.id),
+    });
+
+    const assistantMessages = repository
+      .listMessages(chat.id)
+      .filter((m) => m.role === "assistant");
+
+    // 5 角色 × 2 轮 = 10 条消息（而非配置的 15）
+    expect(assistantMessages.length).toBe(10);
 
     await new Promise((resolve) => setTimeout(resolve, 100));
     repository.close();
