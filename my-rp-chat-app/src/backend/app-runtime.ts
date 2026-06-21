@@ -371,8 +371,11 @@ export class AppRuntime {
         ? new LangChainTracer({ projectName: this.config.langsmithProject })
         : undefined;
 
-    // 3. 在 microtask 中异步执行 agent 流程，不阻塞响应返回
-    queueMicrotask(async () => {
+    // 3. 在后台异步执行 agent 流程，不阻塞响应返回
+    // 使用立即调用的 async 函数表达式（IIFE）而非 queueMicrotask：
+    // - 避免微任务优先级过高阻塞 I/O
+    // - 语义更清晰，错误处理更直观
+    void (async () => {
       try {
         if (request.mode === "group") {
           const coordinator = new GroupChatCoordinator(graphDependencies);
@@ -417,7 +420,7 @@ export class AppRuntime {
       } finally {
         this.sseService.close(stream.streamId);
       }
-    });
+    })();
 
     return {
       jobId: hooks.jobId ?? stream.streamId,

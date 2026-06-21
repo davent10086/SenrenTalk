@@ -22,6 +22,7 @@ export interface AppConfig {
   /** 视觉模型名称，仅在用户发送图片时使用。默认 qwen-vl-plus。 */
   llmVisionModel: string;
   esNode: string;
+  esEnabled: boolean;
   esUsername: string;
   esPassword: string;
   esDialogueIndex: string;
@@ -94,6 +95,7 @@ export function createAppConfig(appRoot: string, userDataPath: string): AppConfi
     llmModel: process.env.LLM_MODEL ?? "qwen-plus",
     llmVisionModel: process.env.LLM_VISION_MODEL ?? "qwen-vl-plus",
     esNode: process.env.ES_NODE ?? "https://127.0.0.1:9200/",
+    esEnabled: parseBoolean(process.env.ES_ENABLED, true),
     esUsername: process.env.ES_USERNAME ?? "elastic",
     esPassword: process.env.ES_PASSWORD ?? "",
     esDialogueIndex: process.env.ES_DIALOGUE_INDEX ?? "senren_dialogues",

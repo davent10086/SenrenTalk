@@ -118,6 +118,10 @@ export class ElasticsearchService {
    */
   constructor(private readonly config: AppConfig) {
     this.embeddingService = new BgeM3EmbeddingService(config);
+    if (!config.esEnabled) {
+      return;
+    }
+    // 有密码则使用基础认证；无密码也允许连接（本地开发 ES 默认无认证）
     if (config.esPassword) {
       this.client = new Client({
         node: config.esNode,
@@ -129,12 +133,19 @@ export class ElasticsearchService {
           rejectUnauthorized: config.esRejectUnauthorized,
         },
       });
+    } else {
+      this.client = new Client({
+        node: config.esNode,
+        tls: {
+          rejectUnauthorized: config.esRejectUnauthorized,
+        },
+      });
     }
   }
 
   /**
    * 检查 Elasticsearch 客户端是否可用。
-   * @returns 如果已配置 ES 密码则返回 true
+   * @returns 如果已启用 ES 且客户端已创建则返回 true
    */
   get enabled(): boolean {
     return Boolean(this.client);
@@ -612,9 +623,11 @@ export class ElasticsearchService {
       embeddingText || core.relationshipStage || core.character,
       "core-memory-index",
     );
+    // _id 与 source_id 统一使用 core.id，通过 record_type=core_memory 区分类型，
+    // 避免查询时需要关心前缀，降低心智负担
     await this.client.index({
       index: this.config.esMemoryIndex,
-      id: "core_" + core.id,
+      id: core.id,
       refresh: true,
       document: {
         source_id: core.id,

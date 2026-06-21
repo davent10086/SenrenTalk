@@ -154,12 +154,17 @@ export class LlmService {
           content: [
             request.systemPrompt,
             "你必须严格输出单个 JSON 对象，不能输出任何额外解释、前后缀、代码块或 Markdown。",
+            "基础格式：",
             "{\"content\":\"中文回复\",\"speechTextJa\":\"日语朗读稿\"}",
+            "可选字段（仅在群聊场景下使用）：",
+            "- nextSpeaker: 字符串，指定下一位发言的角色名（不要加引号外的额外说明）。",
+            "- skip: 布尔值，true 表示本轮自愿不发言（此时 content 和 speechTextJa 可为空字符串）。",
             "要求：",
             "1. content 使用自然中文，适合界面展示。",
             "2. speechTextJa 使用自然日语口语，适合 TTS 朗读。",
             "3. 两个字段必须语义一致，保持同一角色口吻。",
             "4. JSON 的第一个键必须是 content，并尽快开始输出 content 的正文。",
+            "5. 单聊场景下不要输出 nextSpeaker 和 skip 字段。",
             hasImages
               ? "用户发送了图片，请结合图片内容进行回复。"
               : "",
@@ -403,9 +408,28 @@ export class LlmService {
    * @returns 摘要字符串，最大长度 100 字符。
    */
   async generateConversationSummary(input: { characterName: string; recentMessages: string }): Promise<string> {
-    const response = await this.client.chat.completions.create({ model: this.config.llmModel, temperature: 0.3, messages: [
-      { role: "system", content: `摘要助手。角色名：`+input.characterName+`\n摘要：` }, { role: "user", content: `概括：\n`+input.recentMessages },
-    ] });
+    const response = await this.client.chat.completions.create({
+      model: this.config.llmModel,
+      temperature: 0.3,
+      messages: [
+        {
+          role: "system",
+          content: [
+            `你是对话摘要助手，负责把多轮对话压缩为简洁摘要，供后续对话作为长期上下文参考。`,
+            `当前角色：${input.characterName}`,
+            `要求：`,
+            `1. 用一段话概括对话核心内容，不超过 80 字。`,
+            `2. 保留关键事实、用户偏好、关系变化、重要事件，忽略寒暄和细节。`,
+            `3. 以第三人称客观陈述，不要加入新的推测或信息。`,
+            `4. 只输出摘要正文，不要加引号、解释或 Markdown 标记。`,
+          ].join("\n"),
+        },
+        {
+          role: "user",
+          content: `请概括以下对话：\n${input.recentMessages}`,
+        },
+      ],
+    });
     return response.choices[0]?.message?.content?.trim().slice(0, 100) ?? "暂无摘要";
   }
 }

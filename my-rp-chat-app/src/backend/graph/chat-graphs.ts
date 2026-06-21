@@ -128,7 +128,12 @@ export interface GraphDependencies {
 
 /** 获取消息列表中最新的用户消息（倒序查找）。 */
 function findLastUserMessage(messages: ChatMessage[]): ChatMessage | undefined {
-  return [...messages].reverse().find((message) => message.role === "user");
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === "user") {
+      return messages[i];
+    }
+  }
+  return undefined;
 }
 
 /**

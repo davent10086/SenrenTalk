@@ -700,11 +700,11 @@ export class ChatRepository {
     if (!row) return undefined;
     return {
       id: row.id, chatId: row.chat_id, character: row.character_id,
-      userPreferences: JSON.parse(row.user_preferences_json),
-      userTraits: JSON.parse(row.user_traits_json),
+      userPreferences: parseJson<string[]>(row.user_preferences_json, []),
+      userTraits: parseJson<string[]>(row.user_traits_json, []),
       relationshipStage: row.relationship_stage,
-      relationshipNotes: JSON.parse(row.relationship_notes_json),
-      keyFacts: JSON.parse(row.key_facts_json),
+      relationshipNotes: parseJson<string[]>(row.relationship_notes_json, []),
+      keyFacts: parseJson<string[]>(row.key_facts_json, []),
       lastUpdated: row.last_updated,
     };
   }

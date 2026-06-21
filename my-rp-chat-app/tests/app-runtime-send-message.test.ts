@@ -76,6 +76,13 @@ async function createRuntimeWithMocks(options: {
     loadCharacters: vi.fn().mockResolvedValue(options.characters),
   });
 
+  // 在 start() 之前 mock ES 服务的 ensureMemoryIndex，避免连接真实 ES
+  // （ES_ENABLED 默认为 true，无密码也会创建客户端，需要在 start() 调用前拦截）
+  Object.assign(runtime.elasticsearchService, {
+    ensureMemoryIndex: vi.fn().mockResolvedValue(undefined),
+    ensureDialogueIndex: vi.fn().mockResolvedValue(undefined),
+  });
+
   await runtime.start();
   runtime.repository.upsertCharacters(options.characters);
 
@@ -100,7 +107,6 @@ async function createRuntimeWithMocks(options: {
   });
 
   // 替换 ES 服务为 mock（避免真实 ES 连接）
-  // 注意：enabled 是 getter，不能直接赋值，但未配置 ES_PASSWORD 时默认为 false
   Object.assign(runtime.elasticsearchService, {
     hybridSearch: vi.fn().mockResolvedValue([]),
     indexMemory: vi.fn().mockResolvedValue(undefined),

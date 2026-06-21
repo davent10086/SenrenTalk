@@ -256,9 +256,8 @@ export class SseService {
    * @param response Express 响应对象
    */
   private handleStream(request: Request, response: Response): void {
-    const streamId = Array.isArray(request.params.streamId)
-      ? request.params.streamId[0]
-      : request.params.streamId;
+    const rawStreamId = request.params.streamId;
+    const streamId = Array.isArray(rawStreamId) ? rawStreamId[0] : rawStreamId;
     const session = this.sessions.get(streamId);
     const token = extractToken(request);
 

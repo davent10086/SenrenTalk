@@ -43,6 +43,7 @@ vi.mock("@elastic/elasticsearch", () => ({
 function createTestConfig() {
   return {
     esNode: "http://localhost:9200",
+    esEnabled: true,
     esDialogueIndex: "test-dialogue",
     esMemoryIndex: "test-memory",
     topK: 10,

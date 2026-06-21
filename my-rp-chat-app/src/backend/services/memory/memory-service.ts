@@ -89,6 +89,11 @@ export class MemoryService {
 
   /**
    * 检索情景记忆 (L2)：优先 ES，降级到 SQLite
+   *
+   * 注意：降级路径返回的 score 为 importance/10（0-1 范围），
+   * 与 ES 返回的 BM25/向量分数量级不同。调用方在混合使用时
+   * 不应跨源比较 score，仅作为同源排序参考。
+   *
    * @param chatId - 会话 ID
    * @param query - 检索查询文本
    * @param characterId - 可选的角色 ID，用于过滤特定角色的记忆
@@ -104,6 +109,7 @@ export class MemoryService {
       return esResults;
     }
     // ES 降级时返回 SQLite 记忆，按 character 过滤防止串角色
+    // score 归一化到 0-1 范围（importance/10），与 ES 降级路径保持一致
     return this.repository
       .listMemoryEvents(chatId, 6, characterId)
       .filter((event) => !characterId || event.character === characterId)
@@ -128,10 +134,19 @@ export class MemoryService {
     character: CharacterProfile,
     messages: ChatMessage[],
   ): Promise<MemoryEvent | null> {
-    const latestUser = [...messages].reverse().find((m) => m.role === "user");
-    const latestAssistant = [...messages].reverse().find(
-      (m) => m.role === "assistant" && m.roleId === character.id,
-    );
+    // 从后向前遍历一次，同时取出最新的用户消息和该角色的最新助手消息
+    let latestUser: ChatMessage | undefined;
+    let latestAssistant: ChatMessage | undefined;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i];
+      if (!latestUser && msg.role === "user") {
+        latestUser = msg;
+      }
+      if (!latestAssistant && msg.role === "assistant" && msg.roleId === character.id) {
+        latestAssistant = msg;
+      }
+      if (latestUser && latestAssistant) break;
+    }
     if (!latestUser || !latestAssistant) return null;
 
     // 用 LLM 提炼情景记忆
