@@ -7,7 +7,7 @@ import { getAvatarPath } from "../utils/avatar";
 
 export function GroupChatCreatePage() {
   const { characters } = useBootstrapContext();
-  const { createGroupChat, setCurrentView } = useViewContext();
+  const { createGroupChat } = useViewContext();
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
   const toggle = (id: string) => {
