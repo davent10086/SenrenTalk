@@ -9,7 +9,7 @@ const DEFAULT_MAX_ROUNDS = 2;
 /** 连续多少轮无人发言则自动退出。 */
 const DEFAULT_IDLE_STREAK_THRESHOLD = 2;
 /** 角色间发言的最小间隔（毫秒），避免消息密集推送造成信息过载。 */
-const TURN_BREATHING_DELAY_MS = 500;
+const TURN_BREATHING_DELAY_MS = 200;
 
 /**
  * 群聊协调器。

@@ -169,6 +169,36 @@ function buildRetrievalQuery(
   return `${userContent}\n\n=== 群聊上下文 ===\n${recentMessages}`;
 }
 
+/**
+ * 角色名变体映射：key 为角色 id（currentRoleId），value 为该角色的所有名称变体（长名优先）。
+ * 用于检索前剥离 query 中的角色名，避免 embedding 对人名过度关联而忽略场景语义。
+ */
+const CHARACTER_NAME_VARIANTS: Record<string, string[]> = {
+  丛雨: ["丛雨丸", "丛雨"],
+  芳乃: ["朝武芳乃", "芳乃"],
+  茉子: ["常陆茉子", "茉子"],
+  蕾娜: ["蕾娜·列支敦瑙尔", "蕾娜"],
+  将臣: ["将臣"],
+};
+
+/**
+ * 从检索查询中剥离当前角色名（含全名变体）。
+ *
+ * 角色已通过 character filter 限定，query 里的角色名是冗余信息，
+ * 且会误导 embedding 对人名过度关联（如「芳乃在厨房做饭」会被算得与「请直接叫我芳乃」相近）。
+ * 剥离后让检索聚焦场景语义。长名优先替换避免短名破坏长名（如「茉子」不应先于「常陆茉子」）。
+ */
+function stripCharacterName(query: string, characterId?: string): string {
+  if (!characterId) return query;
+  const names = CHARACTER_NAME_VARIANTS[characterId];
+  if (!names || names.length === 0) return query;
+  let result = query;
+  for (const name of names) {
+    result = result.split(name).join("");
+  }
+  return result.replace(/\s+/g, " ").trim();
+}
+
 const DEFAULT_USER_ROLE_ID = "将臣";
 
 /** 从自称数组中提取"后期"阶段使用的自称（去掉"（后期）"标记）。 */
@@ -214,6 +244,7 @@ function buildSystemPrompt(
     `禁用词：${character.promptProfile.forbiddenWords.join("、") || "无"}`,
     `禁用风格：${character.promptProfile.forbiddenStyle.join("；") || "无"}`,
     `世界知识：${character.promptProfile.worldKnowledge.join("；")}`,
+    `家庭与亲戚关系严格遵循上述世界知识与角色关系设定：对于设定中已明确过世、在世或缺席的亲属，必须如实回应，不得改变其生死或状态；若用户提及设定中完全未列出的亲属（如姐妹、兄弟等），不得顺应用户预设承认其存在，必须以角色口吻否认自己有这样的亲属；不得凭空编造任何亲属的近况或日常互动；对于设定中未提及的其他角色家庭情况，不得附和或确认用户陈述的相关信息，应表示不清楚或建议询问当事人。`,
     `默认把当前用户视为 ${DEFAULT_USER_ROLE_ID}，除非用户明确要求你面对的是其他人或指定剧情阶段。`,
     relationshipWithUser
       ? `你与${DEFAULT_USER_ROLE_ID}的关系：${relationshipWithUser.relation}；当前态度：${relationshipWithUser.attitude}；亲密度：${relationshipWithUser.closeness}/10。`
@@ -377,7 +408,11 @@ async function prepareTurnNode(state: ChatGraphState, deps: GraphDependencies) {
   const currentRoleId = state.currentRoleId ?? state.participants[0];
   const character = await getCharacter({ ...state, currentRoleId }, deps.repository);
   // 提前计算检索查询，供后续 extract_tags/retrieve_context/retrieve_memory 复用
-  const retrievalQuery = buildRetrievalQuery(state.messages, state.groupContext, currentRoleId);
+  // 剥离当前角色名（含全名），避免 embedding 对人名过度关联而忽略场景语义（角色已由 filter 限定）
+  const retrievalQuery = stripCharacterName(
+    buildRetrievalQuery(state.messages, state.groupContext, currentRoleId),
+    currentRoleId,
+  );
   return {
     currentRoleId,
     character,
