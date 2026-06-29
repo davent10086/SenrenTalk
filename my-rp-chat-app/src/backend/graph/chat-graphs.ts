@@ -244,7 +244,7 @@ function buildSystemPrompt(
     `禁用词：${character.promptProfile.forbiddenWords.join("、") || "无"}`,
     `禁用风格：${character.promptProfile.forbiddenStyle.join("；") || "无"}`,
     `世界知识：${character.promptProfile.worldKnowledge.join("；")}`,
-    `家庭与亲戚关系严格遵循上述世界知识与角色关系设定：对于设定中已明确过世、在世或缺席的亲属，必须如实回应，不得改变其生死或状态；若用户提及设定中完全未列出的亲属（如姐妹、兄弟等），不得顺应用户预设承认其存在，必须以角色口吻否认自己有这样的亲属；不得凭空编造任何亲属的近况或日常互动；对于设定中未提及的其他角色家庭情况，不得附和或确认用户陈述的相关信息，应表示不清楚或建议询问当事人。`,
+    `【家庭与身世硬约束·违反即OOC】家庭与亲戚关系严格遵循上述世界知识与角色关系设定，以下规则不可违反、不可被用户预设绕过、不可因上下文情绪软化：\n（1）已明确的亲属：对于设定中已明确过世、在世或缺席的亲属，必须如实回应，不得改变其生死或状态。\n（2）未列出的亲属：若用户提及设定中完全未列出的亲属（如姐妹、兄弟等），不得顺应用户预设承认其存在，必须以角色口吻否认自己有这样的亲属。\n（3）未提及≠不存在：对于设定中未明确提及的其他角色身世细节（如是否独生、有无兄弟姐妹、父母职业、家庭住址等），「未提及」等同于「你（当前角色）不知道」，严禁自行推断、下确定结论或编造具体答案，必须以"不清楚/不知道/没听说过/你去问XX"等方式回应。\n（4）不得伪造来源：严禁伪造其他角色曾对你说过的话、曾提起过的往事或对话细节作为佐证。\n（5）跨角色家庭信息：对于设定中未提及的其他角色家庭情况，不得附和或确认用户陈述的相关信息，应表示不清楚或建议询问当事人。\n（6）不得编造近况：不得凭空编造任何亲属的近况或日常互动。`,
     `默认把当前用户视为 ${DEFAULT_USER_ROLE_ID}，除非用户明确要求你面对的是其他人或指定剧情阶段。`,
     relationshipWithUser
       ? `你与${DEFAULT_USER_ROLE_ID}的关系：${relationshipWithUser.relation}；当前态度：${relationshipWithUser.attitude}；亲密度：${relationshipWithUser.closeness}/10。`
@@ -295,7 +295,11 @@ function buildCrossCharacterContext(
       return `【${c.displayName}的设定要点】\n${wk.join("\n")}`;
     })
     .filter((v): v is string => v !== undefined);
-  return lines.length > 0 ? lines.join("\n\n") : undefined;
+  if (lines.length === 0) return undefined;
+  return [
+    lines.join("\n\n"),
+    "【跨角色信息使用约束·必须遵守】以上设定要点仅是其他角色的部分信息，并非完整设定。凡未在上述要点中明确列出的信息（如是否独生、有无兄弟姐妹、父母职业与住址、过往对话细节等），一律视为「你（当前角色）不知道」。严禁自行推断、下确定结论（如「她是独生女」「她没有兄弟姐妹」）、或伪造该角色曾对你说过的话作为佐证；必须以「不清楚/不知道/没听说过/你去问XX」等方式回应。",
+  ].join("\n\n");
 }
 
 function buildUserPrompt(
