@@ -5,13 +5,35 @@
  * 将 Express 和 WorkerRuntime 共同需要的业务操作集中在此层，
  * 两者都委托给该类，避免逻辑分散。
  */
-import type { ChatMessage, ChatMode, ChatRecord, ChatRequest, ChatSendResult, BootstrapPayload, PublicSettings } from "../common/types";
+import type {
+  BackendJobProgress,
+  BootstrapPayload,
+  ChatMessage,
+  ChatMode,
+  ChatRecord,
+  ChatRequest,
+  ChatSendResult,
+  GroupChatRoomConfig,
+  GroupChatRoomState,
+  PublicSettings,
+} from "../common/types";
 import { AppRuntime } from "../backend/app-runtime";
 import { JobRegistry } from "../backend/job-registry";
+
+function normalizeJobProgress(progress: BackendJobProgress): BackendJobProgress {
+  const percent = progress.total && progress.total > 0
+    ? Math.min(100, Math.round((progress.current / progress.total) * 100))
+    : progress.percent;
+  return {
+    ...progress,
+    percent,
+  };
+}
 
 export class ApiService {
   readonly runtime: AppRuntime;
   readonly jobs: JobRegistry;
+  private readonly chatControllers = new Map<string, AbortController>();
 
   constructor(appRoot: string, userDataPath: string) {
     this.runtime = new AppRuntime(appRoot, userDataPath);
@@ -52,8 +74,20 @@ export class ApiService {
     return this.runtime.listMessages(chatId);
   }
 
-  createChat(mode: ChatMode, participants: string[], title?: string): ChatRecord {
-    return this.runtime.createChat(mode, participants, title);
+  createChat(
+    mode: ChatMode,
+    participants: string[],
+    title?: string,
+    roomConfig?: Partial<GroupChatRoomConfig>,
+  ): ChatRecord {
+    return this.runtime.createChat(mode, participants, title, roomConfig);
+  }
+
+  updateGroupChatRoom(
+    chatId: string,
+    updates: { roomConfig?: Partial<GroupChatRoomConfig>; roomState?: Partial<GroupChatRoomState> },
+  ): ChatRecord {
+    return this.runtime.updateGroupChatRoom(chatId, updates);
   }
 
   async clearMessages(chatId: string): Promise<void> {
@@ -66,6 +100,52 @@ export class ApiService {
 
   async regenerateMessageAudio(messageId: string): Promise<ChatMessage> {
     return this.runtime.regenerateMessageAudio(messageId);
+  }
+
+  async editMessageAndRegenerate(messageId: string, content: string): Promise<ChatSendResult> {
+    const targetMessage = this.runtime.repository.getMessage(messageId);
+    if (!targetMessage) {
+      throw new Error("消息不存在。");
+    }
+
+    const activeJob = this.jobs.findActiveChatJob(targetMessage.chatId);
+    if (activeJob) {
+      const error = new Error("该会话正在生成回复，请稍后再试") as Error & { statusCode: number };
+      error.statusCode = 409;
+      throw error;
+    }
+
+    const job = this.jobs.createJob({ type: "chat", chatId: targetMessage.chatId });
+    const controller = new AbortController();
+    this.chatControllers.set(job.id, controller);
+
+    try {
+      return await this.runtime.editMessageAndRegenerate(messageId, content, {
+        jobId: job.id,
+        signal: controller.signal,
+        onJobRunning: (jobId, streamId) => {
+          this.jobs.updateJob(jobId, "running", { streamId });
+        },
+        onJobCompleted: (jobId) => {
+          this.chatControllers.delete(jobId);
+          this.jobs.updateJob(jobId, "completed");
+        },
+        onJobFailed: (jobId, errorMessage) => {
+          this.chatControllers.delete(jobId);
+          this.jobs.updateJob(jobId, "failed", { error: errorMessage });
+        },
+        onJobCancelled: (jobId) => {
+          this.chatControllers.delete(jobId);
+          this.jobs.updateJob(jobId, "cancelled", { error: "消息生成已中断" });
+        },
+      });
+    } catch (error) {
+      this.chatControllers.delete(job.id);
+      this.jobs.updateJob(job.id, "failed", {
+        error: error instanceof Error ? error.message : "编辑后重生成失败",
+      });
+      throw error;
+    }
   }
 
   async rebuildDialogueIndex(): Promise<{ indexedCount: number }> {
@@ -84,23 +164,33 @@ export class ApiService {
 
     // 创建 chat job 并同步注册到 JobRegistry，确保后续并发请求能检测到
     const job = this.jobs.createJob({ type: "chat", chatId: request.chatId });
+    const controller = new AbortController();
+    this.chatControllers.set(job.id, controller);
 
     try {
       return await this.runtime.sendMessage(request, {
         jobId: job.id,
+        signal: controller.signal,
         onJobRunning: (jobId, streamId) => {
           this.jobs.updateJob(jobId, "running", { streamId });
         },
         onJobCompleted: (jobId) => {
+          this.chatControllers.delete(jobId);
           this.jobs.updateJob(jobId, "completed");
         },
         onJobFailed: (jobId, errorMessage) => {
+          this.chatControllers.delete(jobId);
           this.jobs.updateJob(jobId, "failed", { error: errorMessage });
+        },
+        onJobCancelled: (jobId) => {
+          this.chatControllers.delete(jobId);
+          this.jobs.updateJob(jobId, "cancelled", { error: "消息生成已中断" });
         },
       });
     } catch (error) {
       // runtime.sendMessage 在 queueMicrotask 之前抛出时（如会话不存在、附件持久化失败），
       // job hooks 不会触发，需在此标记为 failed，避免 job 永远停留在 pending 阻塞后续请求
+      this.chatControllers.delete(job.id);
       this.jobs.updateJob(job.id, "failed", {
         error: error instanceof Error ? error.message : "发送消息失败",
       });
@@ -112,6 +202,21 @@ export class ApiService {
 
   listJobs() {
     return this.jobs.listJobs();
+  }
+
+  async cancelJob(jobId: string) {
+    const job = this.jobs.getJob(jobId);
+    if (job.type !== "chat") {
+      throw new Error("只有聊天任务支持中断。");
+    }
+    if (job.status !== "pending" && job.status !== "running") {
+      return job;
+    }
+    this.chatControllers.get(jobId)?.abort();
+    this.chatControllers.delete(jobId);
+    return this.jobs.updateJob(jobId, "cancelled", {
+      error: "消息生成已中断",
+    });
   }
 
   /**
@@ -131,7 +236,11 @@ export class ApiService {
 
     queueMicrotask(async () => {
       try {
-        const result = await this.runtime.rebuildDialogueIndex();
+        const result = await this.runtime.rebuildDialogueIndex((progress) => {
+          this.jobs.updateJob(job.id, "running", {
+            progress: normalizeJobProgress(progress),
+          });
+        });
         this.jobs.updateJob(job.id, "completed", {
           result: { indexedCount: result.indexedCount },
         });
@@ -153,4 +262,3 @@ export class ApiService {
     return this.jobs.findRunningChatJob(chatId);
   }
 }
-

@@ -10,263 +10,298 @@
 </p>
 
 <p align="center">
-  A roleplay-focused AI chat application built around character consistency, memory, group chat orchestration, image understanding, and voice companionship.
+  面向角色扮演场景的 AI 对话应用，强调角色一致性、群聊房间感、记忆延续、多模态理解与语音陪伴体验。
 </p>
 
-## What It Is
+## 项目简介
 
-SenrenTalk is a multi-character AI roleplay project inspired by `Senren * Banka`.
+SenrenTalk 是一个以 `千恋万花（Senren * Banka）` 角色扮演体验为灵感来源的多角色 AI 对话项目。
 
-The app is built for immersive character conversation rather than generic assistant chat. Its core focus is:
+它不是通用型助手聊天产品，而是更偏向沉浸式角色陪伴与角色群聊体验。当前项目重点放在：
 
-- keeping each character in role
-- supporting both 1-on-1 chat and multi-character rooms
-- preserving memory across turns
-- handling image-based context
-- making the chat feel closer to a voiced companion experience
+- 让角色持续保持人设与语气一致
+- 支持单聊与多角色群聊
+- 让对话具备可延续的记忆
+- 支持图片输入与身份敏感场景理解
+- 提供更接近语音陪伴的聊天体验
 
-The main application lives in [my-rp-chat-app](./my-rp-chat-app/). Character data, retrieval assets, and helper scripts are stored alongside it in this repository.
+主应用位于 [my-rp-chat-app](./my-rp-chat-app/)，角色数据、检索资产和辅助脚本与应用代码一起保存在本仓库中。
 
-## Highlights
+## 运行截图
 
-- Single chat and group chat for multiple RP characters
-- Character guardrails for tone, self-reference, relationship, and OOC boundaries
-- Layered memory with summaries, episodic memories, and core relationship state
-- Retrieval-enhanced dialogue support with SQLite and Elasticsearch
-- Image attachments for identity-sensitive multimodal conversations
-- SSE-based streaming responses
-- Japanese TTS support for character voice playback
-- Group Chat V2 room model with visible round state, reply targets, and anti-repeat protection
+### 角色列表
 
-## Architecture
+![角色列表](./my-rp-chat-app/public/运行截图/角色列表.png)
+
+### 单人聊天
+
+![个人聊天](./my-rp-chat-app/public/运行截图/个人聊天.png)
+
+### 群聊创建页
+
+![群聊创建页面](./my-rp-chat-app/public/运行截图/群聊创建页面.png)
+
+## 核心亮点
+
+- 支持单聊与多角色群聊，适合角色扮演型互动
+- 角色约束覆盖语气、自称、关系、禁用词、越界控制等关键维度
+- 三层记忆结构支持长期关系与阶段性情境延续
+- 检索增强结合 SQLite 与 Elasticsearch，提升角色知识召回能力
+- 支持图片附件，在“图中是谁”“是不是你”这类场景中做额外约束
+- 基于 SSE 的流式输出体验
+- 支持日语 TTS 与角色音色映射
+- 群聊 V2 已进入房间化改造，支持轮次状态、定向发言与反复读保护
+
+## 架构图
 
 ```mermaid
 flowchart LR
-    U["User"] --> UI["React Renderer"]
+    U["用户"] --> UI["React 前端"]
     UI --> API["Express API + SSE"]
     API --> RT["App Runtime"]
-    RT --> GC["Group Chat Coordinator"]
-    RT --> SC["Single Chat Graph"]
-    GC --> LLM["LLM Service"]
+    RT --> GC["群聊协调器"]
+    RT --> SC["单聊 LangGraph"]
+    GC --> LLM["LLM 服务"]
     SC --> LLM
-    RT --> MEM["Memory Service"]
-    RT --> DB["SQLite Repository"]
-    RT --> ES["Elasticsearch Retrieval"]
-    RT --> TTS["TTS Service"]
-    UI --> MEDIA["Attachments / Audio"]
+    RT --> MEM["记忆服务"]
+    RT --> DB["SQLite 仓库"]
+    RT --> ES["Elasticsearch 检索"]
+    RT --> TTS["TTS 服务"]
+    UI --> MEDIA["图片 / 音频附件"]
     MEDIA --> API
 ```
 
-## Group Chat V2
+## 功能流程图
 
-The current group chat direction is no longer just "several characters replying in sequence". It is being shaped into a room-based experience.
+```mermaid
+flowchart TD
+    A["用户发送消息"] --> B["前端提交到 API"]
+    B --> C["App Runtime 持久化用户消息"]
+    C --> D{"聊天模式"}
+    D -->|单聊| E["单聊 LangGraph"]
+    D -->|群聊| F["群聊协调器生成本轮计划"]
+    E --> G["检索上下文与记忆"]
+    F --> H["按房间模式调度角色发言"]
+    G --> I["调用模型流式生成"]
+    H --> I
+    I --> J["响应校验 / 反复读保护"]
+    J --> K["保存消息与元数据"]
+    K --> L["可选生成 TTS 音频"]
+    K --> M["通过 SSE 推送到前端"]
+    L --> M
+    M --> N["前端实时渲染消息、状态与音频"]
+```
 
-### V2 goals
+## 群聊 V2
 
-- visible room mode and round state
-- clearer "who is replying to whom"
-- no accidental extra round by default
-- better pacing and fewer repetitive follow-up replies
-- targeted speaking and room-level control
+当前群聊方向不再只是“几个角色顺序回复”，而是逐步升级为“有模式、有状态、有节奏的房间”。
 
-### Room modes
+### 目标
 
-- `single_round`: the default mode; each participant replies at most once
-- `free_chat`: allows follow-up turns within explicit round and message budgets
-- `host_mode`: a host character leads, cues, and closes the room
+- 用户能看懂当前是哪个房间模式
+- 用户能看懂谁在回应谁
+- 默认不再意外多跑一轮
+- 降低机械接话和高频复读
+- 让群聊具备明确的节奏控制能力
 
-## Project Structure
+### 房间模式
+
+- `single_round`：默认模式，每个角色本轮最多回复一次
+- `free_chat`：允许继续接话，但必须受轮次和消息预算约束
+- `host_mode`：由主持角色串场、点名、收尾
+
+## 目录结构
 
 ```text
 SenrenTalk/
-|-- my-rp-chat-app/         # Main application
+|-- my-rp-chat-app/         # 主应用
 |   |-- src/
-|   |   |-- backend/        # Runtime, graph orchestration, memory, retrieval, TTS
-|   |   |-- common/         # Shared types
-|   |   |-- renderer/       # React UI
-|   |   `-- server/         # Express entry and API layer
-|   `-- tests/              # Vitest test suite
-|-- docs/                   # Design notes and technical docs
-|-- 索引数据/               # Character and retrieval-related assets
-|-- 脚本/                   # Helper scripts
+|   |   |-- backend/        # 运行时、图编排、记忆、检索、TTS
+|   |   |-- common/         # 前后端共享类型
+|   |   |-- renderer/       # React 前端
+|   |   `-- server/         # Express 服务入口与 API
+|   `-- tests/              # Vitest 测试
+|-- docs/                   # 设计与实现文档
+|-- 索引数据/               # 角色数据与检索资产
+|-- 脚本/                   # 辅助脚本
 `-- README.md
 ```
 
-## Tech Stack
+## 技术栈
 
-| Layer | Stack |
+| 层 | 技术 |
 | --- | --- |
-| Frontend | React 18, Vite, Framer Motion |
-| Backend | Node.js, Express 5, TypeScript |
-| Orchestration | LangGraph |
-| Model Access | OpenAI-compatible API |
-| Storage | SQLite |
-| Retrieval | Elasticsearch |
-| Streaming | SSE |
-| Testing | Vitest, Testing Library |
+| 前端 | React 18, Vite, Framer Motion |
+| 后端 | Node.js, Express 5, TypeScript |
+| 编排 | LangGraph |
+| 模型接入 | OpenAI 兼容 API |
+| 存储 | SQLite |
+| 检索 | Elasticsearch |
+| 流式通信 | SSE |
+| 测试 | Vitest, Testing Library |
 
-## Core Capabilities
+## 核心能力
 
-### Character consistency
+### 角色一致性
 
-- persona constraints are injected into prompts
-- relationship and address rules are preserved across dialogue
-- post-generation validation helps catch obvious OOC output
+- 将角色设定约束注入系统提示词
+- 保留称呼、关系、语气、自称等细节
+- 在生成后做基础校验，拦截明显 OOC 输出
 
-### Memory layers
+### 三层记忆
 
-- L1: conversation summary
-- L2: episodic memory events
-- L3: core memory and relationship state
+- L1：对话摘要
+- L2：情景记忆事件
+- L3：核心记忆与关系状态
 
-### Multimodal input
+### 多模态输入
 
-- users can attach images with messages
-- the system applies extra checks for "who is in the image" style questions
-- regression tests cover identity-confusion edge cases
+- 支持图片随消息发送
+- 对身份识别类问题做额外提示和一致性控制
+- 已补充相关回归测试，降低角色误认概率
 
-### Streaming experience
+### 流式体验
 
-- responses are streamed over SSE
-- group chat now emits room-level events such as round plan, skipped roles, and room finished
+- 消息通过 SSE 实时推送
+- 群聊额外提供轮次计划、跳过角色、房间结束等状态事件
 
-## Quick Start
+## 快速开始
 
-### Requirements
+### 环境要求
 
 - Node.js `22+`
-- an available LLM API key
-- optional: Elasticsearch
-- optional: a local or remote embedding service
+- 可用的 LLM API Key
+- 可选：Elasticsearch
+- 可选：本地或远程 Embedding 服务
 
-### Install
+### 安装依赖
 
-Run inside `my-rp-chat-app/`:
+进入 `my-rp-chat-app/` 后执行：
 
 ```bash
 npm install
 ```
 
-If PowerShell has trouble calling `npm`, use:
+如果 PowerShell 下 `npm` 调用异常，可以使用：
 
 ```bash
 npm.cmd install
 ```
 
-### Environment
+### 环境变量
 
-Copy the example file:
+复制示例文件：
 
 ```bash
 cp .env.example .env
 ```
 
-On Windows, you can also duplicate `my-rp-chat-app/.env.example` manually and rename it to `.env`.
+Windows 下也可以直接复制 `my-rp-chat-app/.env.example` 并重命名为 `.env`。
 
-Common variables:
+常用变量如下：
 
-| Variable | Purpose |
+| 变量 | 说明 |
 | --- | --- |
-| `LLM_API_KEY` | API key for the model provider |
-| `LLM_BASE_URL` | OpenAI-compatible base URL |
-| `LLM_MODEL` | Main text model |
-| `LLM_VISION_MODEL` | Vision-capable model |
-| `ES_NODE` | Elasticsearch endpoint |
-| `ES_USERNAME` / `ES_PASSWORD` | Elasticsearch credentials |
-| `OLLAMA_HOST` | Embedding service host |
-| `OLLAMA_MODEL_NAME` | Embedding model name |
-| `SQLITE_PATH` | SQLite file path |
-| `MEDIA_DIR` | Media directory |
-| `DATASET_DIR` | Defaults to `../索引数据` |
-| `TTS_PROVIDER` | Active TTS provider |
+| `LLM_API_KEY` | 模型服务 API Key |
+| `LLM_BASE_URL` | OpenAI 兼容接口地址 |
+| `LLM_MODEL` | 文本模型 |
+| `LLM_VISION_MODEL` | 图像理解模型 |
+| `ES_NODE` | Elasticsearch 地址 |
+| `ES_USERNAME` / `ES_PASSWORD` | Elasticsearch 认证信息 |
+| `OLLAMA_HOST` | Embedding 服务地址 |
+| `OLLAMA_MODEL_NAME` | Embedding 模型名 |
+| `SQLITE_PATH` | SQLite 文件路径 |
+| `MEDIA_DIR` | 媒体文件目录 |
+| `DATASET_DIR` | 默认为 `../索引数据` |
+| `TTS_PROVIDER` | 当前启用的 TTS 提供方 |
 
-### Run
+### 启动项目
 
 ```bash
 cd my-rp-chat-app
 ```
 
-Start development mode:
+启动开发模式：
 
 ```bash
 npm run dev
 ```
 
-If needed in PowerShell:
+PowerShell 下可改用：
 
 ```bash
 npm.cmd run dev
 ```
 
-Typical local addresses:
+默认情况下：
 
-- frontend: `http://localhost:5173`
-- backend: `http://127.0.0.1:3001`
+- 前端：`http://localhost:5173`
+- 后端：`http://127.0.0.1:3001`
 
-Run only the backend:
+仅启动后端：
 
 ```bash
 npm run start
 ```
 
-## Common Commands
+## 常用命令
 
 ```bash
-# Development
+# 开发模式
 npm.cmd run dev
 
-# Backend only
+# 仅后端
 npm.cmd run start
 
-# Type check
+# 类型检查
 npm.cmd run typecheck
 
-# Tests
+# 运行测试
 npm.cmd run test
 
-# Frontend build
+# 构建前端
 npm.cmd run build
 
-# Build dialogue index
+# 构建对话索引
 npm.cmd run index:dialogues
 ```
 
-## Quality and Testing
+## 测试与质量
 
-The test suite covers:
+当前测试覆盖：
 
-- single-chat graph behavior
-- group chat coordination
-- database persistence and migration
-- LLM service wrappers
-- streaming consumption on the frontend
-- OOC boundary cases
-- image identity scenarios
+- 单聊图编排
+- 群聊协调逻辑
+- 数据库持久化与迁移
+- LLM 服务封装
+- 前端流式消费
+- OOC 边界场景
+- 图片身份识别相关场景
 
-Recommended before pushing changes:
+建议在提交前至少执行：
 
 ```bash
 npm.cmd run typecheck
 npm.cmd run test
 ```
 
-## Documentation
+## 文档入口
 
-- App note: [my-rp-chat-app/README.md](./my-rp-chat-app/README.md)
-- Agent call chain: [docs/agent-call-chain.md](./docs/agent-call-chain.md)
-- Group chat coordination: [docs/group-chat-coordination.md](./docs/group-chat-coordination.md)
+- 应用说明：[my-rp-chat-app/README.md](./my-rp-chat-app/README.md)
+- 单聊调用链路：[docs/agent-call-chain.md](./docs/agent-call-chain.md)
+- 群聊协调说明：[docs/group-chat-coordination.md](./docs/group-chat-coordination.md)
 
-## Notes
+## 注意事项
 
-- In this environment, `npm.cmd` may work more reliably than plain `npm` under PowerShell.
-- Disabling Elasticsearch TLS verification may help local development, but it is not suitable for production.
-- Image understanding is improved with identity checks, but ambiguous images and deliberately misleading prompts still need careful handling.
+- 在当前 PowerShell 环境里，`npm.cmd` 可能比直接调用 `npm` 更稳定
+- 开发环境下可以临时放宽 Elasticsearch TLS 校验，但不适合生产环境
+- 图片理解能力已增加身份一致性控制，但面对多人物、遮挡、低清图和误导性提问时仍需谨慎
 
-## Disclaimer
+## 版权说明
 
-Character settings, dialogue materials, and story references in this repository are derived from `Senren * Banka`, whose original rights belong to Yuzusoft.
+本项目中的角色设定、对话素材与剧情参考来源于 `千恋万花（Senren * Banka）`，其原始版权归 Yuzusoft 所有。
 
-This repository is intended for learning, research, and technical demonstration. Please do not use copyrighted source material in unauthorized commercial scenarios.
+本仓库仅用于学习、研究与技术演示，请勿将受版权保护的原始内容用于未经授权的商业用途。
 
 ## License
 

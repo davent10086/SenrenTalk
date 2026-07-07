@@ -2,6 +2,47 @@ export type ChatMode = "single" | "group";
 export type MessageRole = "user" | "assistant" | "system";
 export type RecordType = "dialogue" | "passage" | "memory";
 export type AttachmentKind = "image" | "audio" | "file";
+export type GroupChatRoomMode = "single_round" | "free_chat" | "host_mode";
+export type GroupChatSpeakerPolicy = "mentioned_first" | "round_robin" | "model_pick";
+export type GroupChatSilencePolicy = "allow_skip" | "must_reply_if_mentioned";
+export type GroupChatGenerationReason =
+  | "mentioned"
+  | "scheduled"
+  | "nominated"
+  | "host_prompted"
+  | "retry_rewrite"
+  | "skipped";
+export type GroupChatSkipReason =
+  | "no_new_value"
+  | "similar_to_last"
+  | "not_addressed"
+  | "budget_exhausted";
+
+export interface GroupChatRoomConfig {
+  mode: GroupChatRoomMode;
+  topic?: string;
+  scene?: string;
+  targetRoleId?: string | null;
+  maxRounds: number;
+  maxMessages: number;
+  speakerPolicy: GroupChatSpeakerPolicy;
+  silencePolicy: GroupChatSilencePolicy;
+  hostRoleId?: string | null;
+}
+
+export interface GroupChatRoomState {
+  currentRound: number;
+  currentTurn: number;
+  plannedSpeakers: string[];
+  lastSpeakers: string[];
+  skippedRoles: Array<{ roleId: string; reason: GroupChatSkipReason }>;
+  lastFinishedReason?: string;
+  topic?: string;
+  consensus?: string[];
+  unresolved?: string[];
+  mood?: string;
+  lastTargetRoleId?: string | null;
+}
 
 export interface MessageAttachment {
   id: string;
@@ -44,6 +85,12 @@ export interface ChatMessageMetadata {
   speechTextJa?: string;
   retrievedCount?: number;
   memoryCount?: number;
+  replyToMessageId?: string;
+  replyToRoleId?: string;
+  round?: number;
+  turnIndex?: number;
+  generationReason?: GroupChatGenerationReason;
+  skipReason?: GroupChatSkipReason;
 }
 
 export interface TagCollection {
@@ -91,6 +138,8 @@ export interface ChatRecord {
   mode: ChatMode;
   participants: string[];
   mentionTarget?: string | null;
+  roomConfig?: GroupChatRoomConfig;
+  roomState?: GroupChatRoomState;
   createdAt: number;
   updatedAt: number;
 }
@@ -172,11 +221,31 @@ export interface ChatRequest {
   mode: ChatMode;
   participants: string[];
   mentionTarget?: string | null;
+  targetRoleId?: string | null;
   attachments?: PendingAttachmentInput[];
 }
 
+export interface CreateChatRequest {
+  mode: ChatMode;
+  participants: string[];
+  title?: string;
+  roomConfig?: Partial<GroupChatRoomConfig>;
+}
+
+export interface UpdateGroupChatRoomRequest {
+  roomConfig?: Partial<GroupChatRoomConfig>;
+  roomState?: Partial<GroupChatRoomState>;
+}
+
 export type BackendJobType = "chat" | "index_dialogues";
-export type BackendJobStatus = "pending" | "running" | "completed" | "failed";
+export type BackendJobStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
+
+export interface BackendJobProgress {
+  current: number;
+  total?: number;
+  stage?: string;
+  percent?: number;
+}
 
 export interface BackendJob {
   id: string;
@@ -188,6 +257,8 @@ export interface BackendJob {
   chatId?: string;
   streamId?: string;
   error?: string;
+  durationMs?: number;
+  progress?: BackendJobProgress;
   result?: Record<string, unknown>;
 }
 
@@ -243,13 +314,63 @@ export interface StreamStatusPayload {
   message: string;
 }
 
+export interface StreamRoundStatsPayload {
+  type: "round_stats";
+  streamId: string;
+  round: number;
+  generatedCount: number;
+  speakers: string[];
+  skipped: string[];
+  failed: string[];
+  durationMs: number;
+}
+
+export interface StreamRoundStartedPayload {
+  type: "round_started";
+  streamId: string;
+  round: number;
+  mode: GroupChatRoomMode;
+  targetRoleId?: string | null;
+}
+
+export interface StreamRoundPlanPayload {
+  type: "round_plan";
+  streamId: string;
+  round: number;
+  plannedSpeakers: string[];
+  mode: GroupChatRoomMode;
+  targetRoleId?: string | null;
+}
+
+export interface StreamRoomFinishedPayload {
+  type: "room_finished";
+  streamId: string;
+  reason: string;
+  round: number;
+  generatedCount: number;
+}
+
+export interface StreamRoleSkippedPayload {
+  type: "role_skipped";
+  streamId: string;
+  roleId: string;
+  round: number;
+  reason: GroupChatSkipReason;
+  message: string;
+}
+
 export type StreamEvent =
   | StreamTokenPayload
   | StreamDonePayload
   | StreamErrorPayload
   | StreamAudioReadyPayload
   | StreamAudioFailedPayload
-  | StreamStatusPayload;
+  | StreamStatusPayload
+  | StreamRoundStatsPayload
+  | StreamRoundStartedPayload
+  | StreamRoundPlanPayload
+  | StreamRoomFinishedPayload
+  | StreamRoleSkippedPayload;
 
 export interface BootstrapPayload {
   characters: CharacterProfile[];
@@ -268,4 +389,36 @@ export interface PublicSettings {
   mediaDir: string;
   ttsProvider: string;
   ttsEnabled: boolean;
+}
+
+export function createDefaultGroupChatRoomConfig(participantCount: number): GroupChatRoomConfig {
+  return {
+    mode: "single_round",
+    topic: "",
+    scene: "",
+    targetRoleId: null,
+    maxRounds: 1,
+    maxMessages: Math.max(1, participantCount),
+    speakerPolicy: "mentioned_first",
+    silencePolicy: "must_reply_if_mentioned",
+    hostRoleId: null,
+  };
+}
+
+export function createDefaultGroupChatRoomState(
+  roomConfig?: Partial<GroupChatRoomConfig>,
+): GroupChatRoomState {
+  return {
+    currentRound: 0,
+    currentTurn: 0,
+    plannedSpeakers: [],
+    lastSpeakers: [],
+    skippedRoles: [],
+    lastFinishedReason: undefined,
+    topic: roomConfig?.topic ?? "",
+    consensus: [],
+    unresolved: [],
+    mood: "",
+    lastTargetRoleId: roomConfig?.targetRoleId ?? null,
+  };
 }

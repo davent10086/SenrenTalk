@@ -1,5 +1,6 @@
+/* eslint-disable react-refresh/only-export-components */
 import { createContext, useContext, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import type { ChatRecord } from "../../common/types";
+import type { ChatRecord, GroupChatRoomConfig, GroupChatRoomState } from "../../common/types";
 import * as apiClient from "../api/client";
 
 type View = "characters" | "single" | "group-create" | "group" | "settings";
@@ -10,10 +11,11 @@ interface ViewContextValue {
   activeChatId: string | null;
   setActiveChatId: (id: string | null) => void;
   activeChat: ChatRecord | null;
-  mentionTarget: string | null;
-  setMentionTarget: (target: string | null) => void;
   startSingleChat: (characterId: string) => Promise<void>;
-  createGroupChat: (participants: string[]) => Promise<void>;
+  createGroupChat: (participants: string[], roomConfig?: Partial<GroupChatRoomConfig>) => Promise<void>;
+  updateGroupChatRoom: (
+    updates: { roomConfig?: Partial<GroupChatRoomConfig>; roomState?: Partial<GroupChatRoomState> },
+  ) => Promise<void>;
   deleteChat: (chatId: string) => Promise<void>;
   chats: ChatRecord[];
   refreshChats: () => Promise<void>;
@@ -24,7 +26,6 @@ const ViewContext = createContext<ViewContextValue | null>(null);
 export function ViewProvider({ children }: { children: ReactNode }) {
   const [currentView, setCurrentView] = useState<View>("characters");
   const [activeChatId, setActiveChatId] = useState<string | null>(null);
-  const [mentionTarget, setMentionTarget] = useState<string | null>(null);
   const [chats, setChats] = useState<ChatRecord[]>([]);
 
   const refreshChats = useCallback(async () => {
@@ -52,16 +53,30 @@ export function ViewProvider({ children }: { children: ReactNode }) {
     setCurrentView("single");
   }, [chats, refreshChats]);
 
-  const createGroupChat = useCallback(async (participants: string[]) => {
+  const createGroupChat = useCallback(async (
+    participants: string[],
+    roomConfig?: Partial<GroupChatRoomConfig>,
+  ) => {
     const chat = await apiClient.createChat({
       mode: "group",
       participants,
       title: `${participants.join(" / ")} 群聊`,
+      roomConfig,
     });
     await refreshChats();
     setActiveChatId(chat.id);
     setCurrentView("group");
   }, [refreshChats]);
+
+  const updateGroupChatRoom = useCallback(async (
+    updates: { roomConfig?: Partial<GroupChatRoomConfig>; roomState?: Partial<GroupChatRoomState> },
+  ) => {
+    if (!activeChatId) {
+      return;
+    }
+    const updated = await apiClient.updateGroupChatRoom(activeChatId, updates);
+    setChats((current) => current.map((chat) => (chat.id === updated.id ? updated : chat)));
+  }, [activeChatId]);
 
   const deleteChat = useCallback(async (chatId: string) => {
     await apiClient.deleteChat(chatId);
@@ -76,10 +91,9 @@ export function ViewProvider({ children }: { children: ReactNode }) {
     currentView, setCurrentView,
     activeChatId, setActiveChatId,
     activeChat,
-    mentionTarget, setMentionTarget,
-    startSingleChat, createGroupChat, deleteChat,
+    startSingleChat, createGroupChat, updateGroupChatRoom, deleteChat,
     chats, refreshChats,
-  }), [currentView, activeChatId, activeChat, mentionTarget, chats, startSingleChat, createGroupChat, deleteChat, refreshChats]);
+  }), [currentView, activeChatId, activeChat, chats, startSingleChat, createGroupChat, updateGroupChatRoom, deleteChat, refreshChats]);
 
   return <ViewContext.Provider value={value}>{children}</ViewContext.Provider>;
 }

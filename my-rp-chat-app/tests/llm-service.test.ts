@@ -227,7 +227,7 @@ describe("LlmService.streamStructuredCompletion (dual model switching)", () => {
       llmApiKey: "test-key",
       llmBaseUrl: "http://localhost",
       llmModel: "qwen-plus",
-      llmVisionModel: "qwen-vl-plus",
+      llmVisionModel: "qwen3.7-plus",
     } as never);
 
     const createMock = (service as unknown as { client: { chat: { completions: { create: ReturnType<typeof vi.fn> } } } })
@@ -248,7 +248,7 @@ describe("LlmService.streamStructuredCompletion (dual model switching)", () => {
 
     expect(createMock).toHaveBeenCalledTimes(1);
     const callArgs = createMock.mock.calls[0][0];
-    expect(callArgs.model).toBe("qwen-vl-plus");
+    expect(callArgs.model).toBe("qwen3.7-plus");
   });
 
   it("uses llmModel when no images are provided", async () => {
@@ -257,7 +257,7 @@ describe("LlmService.streamStructuredCompletion (dual model switching)", () => {
       llmApiKey: "test-key",
       llmBaseUrl: "http://localhost",
       llmModel: "qwen-plus",
-      llmVisionModel: "qwen-vl-plus",
+      llmVisionModel: "qwen3.7-plus",
     } as never);
 
     const createMock = (service as unknown as { client: { chat: { completions: { create: ReturnType<typeof vi.fn> } } } })

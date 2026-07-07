@@ -69,6 +69,20 @@ function generateHits(count: number) {
   }));
 }
 
+function extractShouldTerms(
+  args: Array<[Record<string, unknown>]>,
+): Array<{ term: { all_tags: string } }> {
+  const tagCall = args.map((call) => call[0]).find((arg) => {
+    const query = arg.query as Record<string, unknown> | undefined;
+    const bool = query?.bool as Record<string, unknown> | undefined;
+    return Array.isArray(bool?.should);
+  });
+  expect(tagCall).toBeDefined();
+  const query = (tagCall as Record<string, unknown>).query as Record<string, unknown>;
+  const bool = query.bool as { should: Array<{ term: { all_tags: string } }> };
+  return bool.should;
+}
+
 describe("ElasticsearchService.hybridSearch (embedding dedup fix)", () => {
   beforeEach(() => {
     mockSearch.mockReset();
@@ -148,13 +162,7 @@ describe("ElasticsearchService.hybridSearch (embedding dedup fix)", () => {
     expect(mockSearch).toHaveBeenCalledTimes(3);
     const calls = mockSearch.mock.calls;
     // 找到 tag 检索的调用（包含 should 的那个）
-    const tagCall = calls.map((c) => c[0]).find((arg: Record<string, unknown>) => {
-      const query = arg.query as Record<string, unknown> | undefined;
-      const bool = query?.bool as Record<string, unknown> | undefined;
-      return Array.isArray(bool?.should);
-    });
-    expect(tagCall).toBeDefined();
-    const shouldTerms = (tagCall as Record<string, unknown>).query.bool.should as Array<{ term: { all_tags: string } }>;
+    const shouldTerms = extractShouldTerms(calls as Array<[Record<string, unknown>]>);
     const tagValues = shouldTerms.map((s) => s.term.all_tags);
 
     // 高频标签应被过滤
@@ -217,13 +225,7 @@ describe("ElasticsearchService.hybridSearch (tag boost and degradation)", () => 
     expect(mockSearch).toHaveBeenCalledTimes(3);
     const calls = mockSearch.mock.calls;
     // 找到 tag 检索的调用（包含 should 的那个）
-    const tagCall = calls.map((c) => c[0]).find((arg: Record<string, unknown>) => {
-      const query = arg.query as Record<string, unknown> | undefined;
-      const bool = query?.bool as Record<string, unknown> | undefined;
-      return Array.isArray(bool?.should);
-    });
-    expect(tagCall).toBeDefined();
-    const shouldTerms = (tagCall as Record<string, unknown>).query.bool.should as Array<{ term: { all_tags: string } }>;
+    const shouldTerms = extractShouldTerms(calls as Array<[Record<string, unknown>]>);
     const tagValues = shouldTerms.map((s) => s.term.all_tags);
 
     // 所有类型的标签都应参与 tag 检索

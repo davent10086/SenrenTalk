@@ -1,4 +1,4 @@
-﻿﻿import { motion } from "framer-motion";
+﻿import { motion } from "framer-motion";
 import { Database, RefreshCw, Settings2 } from "lucide-react";
 import { useBootstrapContext } from "../context/BootstrapContext";
 import { useChatContext } from "../context/ChatContext";
@@ -55,8 +55,20 @@ export function SettingsPage() {
                 <strong>最近索引任务：</strong>
                 <span className="badge" style={{ marginLeft: "8px" }}>{latestIndexJob ? latestIndexJob.status : "暂无"}</span>
               </p>
+              {latestIndexJob?.progress ? (
+                <p style={{ margin: 0 }}>
+                  <strong>索引进度：</strong>
+                  {latestIndexJob.progress.stage ? `${latestIndexJob.progress.stage} ` : ""}
+                  {latestIndexJob.progress.current}
+                  {latestIndexJob.progress.total ? ` / ${latestIndexJob.progress.total}` : ""}
+                  {typeof latestIndexJob.progress.percent === "number" ? ` (${latestIndexJob.progress.percent}%)` : ""}
+                </p>
+              ) : null}
               {latestIndexJob?.result?.indexedCount ? (
                 <p style={{ margin: 0 }}><strong>最近索引量：</strong>{String(latestIndexJob.result.indexedCount)}</p>
+              ) : null}
+              {typeof latestIndexJob?.durationMs === "number" ? (
+                <p style={{ margin: 0 }}><strong>任务耗时：</strong>{latestIndexJob.durationMs} ms</p>
               ) : null}
               {latestIndexJob?.error ? (
                 <p style={{ margin: 0, color: "var(--theme-danger, #c0392b)" }}><strong>任务错误：</strong>{latestIndexJob.error}</p>

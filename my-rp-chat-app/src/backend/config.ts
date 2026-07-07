@@ -19,7 +19,7 @@ export interface AppConfig {
   llmApiKey?: string;
   llmBaseUrl: string;
   llmModel: string;
-  /** 视觉模型名称，仅在用户发送图片时使用。默认 qwen-vl-plus。 */
+  /** 视觉模型名称，仅在用户发送图片时使用。默认 qwen3.7-plus。 */
   llmVisionModel: string;
   esNode: string;
   esEnabled: boolean;
@@ -93,7 +93,7 @@ export function createAppConfig(appRoot: string, userDataPath: string): AppConfi
     llmApiKey: process.env.LLM_API_KEY,
     llmBaseUrl: process.env.LLM_BASE_URL ?? "https://dashscope.aliyuncs.com/compatible-mode/v1",
     llmModel: process.env.LLM_MODEL ?? "qwen-plus",
-    llmVisionModel: process.env.LLM_VISION_MODEL ?? "qwen-vl-plus",
+    llmVisionModel: process.env.LLM_VISION_MODEL ?? "qwen3.7-plus",
     esNode: process.env.ES_NODE ?? "https://127.0.0.1:9200/",
     esEnabled: parseBoolean(process.env.ES_ENABLED, true),
     esUsername: process.env.ES_USERNAME ?? "elastic",

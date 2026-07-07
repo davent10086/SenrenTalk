@@ -4,7 +4,14 @@ import { createInterface } from "node:readline";
 import path from "node:path";
 import { Client, estypes } from "@elastic/elasticsearch";
 import type { AppConfig } from "../../config";
-import type { MemoryEvent, RetrievedDoc, RetrievalFilters, TagCollection, CoreMemory } from "../../../common/types";
+import type {
+  BackendJobProgress,
+  CoreMemory,
+  MemoryEvent,
+  RetrievedDoc,
+  RetrievalFilters,
+  TagCollection,
+} from "../../../common/types";
 import { BgeM3EmbeddingService } from "./bge-m3-embedding-service";
 
 /**
@@ -246,7 +253,9 @@ export class ElasticsearchService {
    * 构建对话索引：流式读取数据、分批生成向量并批量写入 ES，避免大数据集 OOM。
    * @returns 已索引的记录数量
    */
-  async buildDialogueIndex(): Promise<{ indexedCount: number }> {
+  async buildDialogueIndex(
+    onProgress?: (progress: BackendJobProgress) => void,
+  ): Promise<{ indexedCount: number }> {
     if (!this.client) {
       return { indexedCount: 0 };
     }
@@ -263,13 +272,25 @@ export class ElasticsearchService {
     const tagsById = new Map<string, TagRow>();
     [...dialogueTags, ...passageTags].forEach((row) => tagsById.set(row.source_id, row));
 
+    const datasetFiles = ["dialogues_clean.jsonl", "dialogue_passages.jsonl"] as const;
+    const datasets = await Promise.all(
+      datasetFiles.map(async (file) => ({
+        file,
+        rows: await this.readJsonLinesStream<DatasetRow>(path.join(this.config.datasetDir, file)),
+      })),
+    );
+    const totalRecords = datasets.reduce((sum, dataset) => sum + dataset.rows.length, 0);
     const BATCH_SIZE = 500;
     let indexedCount = 0;
+    onProgress?.({
+      current: 0,
+      total: totalRecords,
+      stage: "load_dataset",
+      percent: totalRecords === 0 ? 100 : 0,
+    });
 
-    for (const file of ["dialogues_clean.jsonl", "dialogue_passages.jsonl"]) {
-      const filePath = path.join(this.config.datasetDir, file);
-      const lines = await this.readJsonLinesStream<DatasetRow>(filePath);
-      const batches = this.chunkArray(lines, BATCH_SIZE);
+    for (const dataset of datasets) {
+      const batches = this.chunkArray(dataset.rows, BATCH_SIZE);
 
       for (const batch of batches) {
         const texts = batch.map((row) =>
@@ -315,6 +336,12 @@ export class ElasticsearchService {
         ]);
         await this.client!.bulk({ refresh: true, operations });
         indexedCount += records.length;
+        onProgress?.({
+          current: indexedCount,
+          total: totalRecords,
+          stage: `bulk_index:${dataset.file}`,
+          percent: totalRecords > 0 ? Math.round((indexedCount / totalRecords) * 100) : 100,
+        });
       }
     }
 

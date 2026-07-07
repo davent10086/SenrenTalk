@@ -1,4 +1,5 @@
-﻿import { createContext, useContext, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+/* eslint-disable react-refresh/only-export-components */
+import { createContext, useContext, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import type { CharacterProfile, PublicSettings } from "../../common/types";
 import * as apiClient from "../api/client";
 

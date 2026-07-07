@@ -6,6 +6,7 @@ interface MessageComposerProps {
   chatId: string | null;
   isStreaming: boolean;
   mentionTarget?: string | null;
+  roomMode?: string | null;
   placeholder?: string;
   onSend: (content: string) => Promise<void>;
   onAttachmentsChanged: (attachments: PendingAttachmentDraft[]) => void;
@@ -21,7 +22,7 @@ interface MessageComposerProps {
  * - 待发送附件预览缩略图
  */
 export function MessageComposer({
-  chatId, isStreaming, mentionTarget, placeholder, onSend, onAttachmentsChanged,
+  chatId, isStreaming, mentionTarget, roomMode, placeholder, onSend, onAttachmentsChanged,
 }: MessageComposerProps) {
   const [input, setInput] = useState("");
   const [pendingAttachments, setPendingAttachments] = useState<PendingAttachmentDraft[]>([]);
@@ -85,7 +86,9 @@ export function MessageComposer({
 
   const defaultPlaceholder = mentionTarget
     ? `可直接输入内容，当前 @${mentionTarget} (按 Enter 发送)`
-    : "输入消息... (按 Enter 发送，Shift+Enter 换行)";
+    : roomMode
+      ? `输入群聊消息（${roomMode}，按 Enter 发送）`
+      : "输入消息... (按 Enter 发送，Shift+Enter 换行)";
 
   return (
     <>

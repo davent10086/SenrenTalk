@@ -2,13 +2,12 @@ import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { LangChainTracer } from "@langchain/core/tracers/tracer_langchain";
+import { ChatSessionService, type ChatJobHooks } from "./chat-session-service";
 import { MediaManager } from "./media-manager";
 import type { AppConfig } from "./config";
 import { createAppConfig } from "./config";
 import { ChatRepository } from "./db/database";
-import { createSingleChatGraph, type ChatGraphState, type GraphDependencies } from "./graph/chat-graphs";
-import { GroupChatCoordinator } from "./graph/group-coordinator";
+import type { GraphDependencies } from "./graph/graph-types";
 import { CharacterService } from "./services/characters/character-service";
 import { ElasticsearchService } from "./services/es/elasticsearch-service";
 import { LlmService, type ImageInput } from "./services/llm/llm-service";
@@ -16,6 +15,7 @@ import { MemoryService } from "./services/memory/memory-service";
 import { SseService } from "./services/stream/sse-service";
 import { TtsService } from "./services/tts/tts-service";
 import type {
+  BackendJobProgress,
   BootstrapPayload,
   ChatSendResult,
   ChatMessage,
@@ -23,18 +23,10 @@ import type {
   ChatMode,
   ChatRecord,
   ChatRequest,
+  GroupChatRoomConfig,
+  GroupChatRoomState,
   PublicSettings,
 } from "../common/types";
-
-/**
- * 对话 Job 生命周期钩子，用于前端跟踪异步对话生成进度。
- */
-interface ChatJobHooks {
-  jobId?: string;
-  onJobRunning?: (jobId: string, streamId: string) => void;
-  onJobCompleted?: (jobId: string) => void;
-  onJobFailed?: (jobId: string, errorMessage: string) => void;
-}
 
 /**
  * 应用运行时核心类。
@@ -54,6 +46,7 @@ export class AppRuntime {
   readonly llmService: LlmService;
   readonly ttsService: TtsService;
   readonly mediaManager: MediaManager;
+  private readonly chatSessionService: ChatSessionService;
   private readonly baseGraphDependencies: Omit<GraphDependencies, "trackAsyncJob">;
 
   /**
@@ -82,6 +75,13 @@ export class AppRuntime {
       ttsService: this.ttsService,
       readImageAsBase64: (relativePath) => this.readImageAsBase64(relativePath),
     };
+    this.chatSessionService = new ChatSessionService({
+      config: this.config,
+      repository: this.repository,
+      sseService: this.sseService,
+      memoryService: this.memoryService,
+      baseGraphDependencies: this.baseGraphDependencies,
+    });
   }
 
   /** 启动所有服务：初始化数据库、加载角色、启动 SSE 服务器、建立 ES 索引。 */
@@ -215,8 +215,35 @@ export class AppRuntime {
   }
 
   /** 创建新会话。 */
-  createChat(mode: ChatMode, participants: string[], title?: string): ChatRecord {
-    return this.repository.createChat(mode, participants, title);
+  createChat(
+    mode: ChatMode,
+    participants: string[],
+    title?: string,
+    roomConfig?: Partial<GroupChatRoomConfig>,
+  ): ChatRecord {
+    return this.repository.createChat(mode, participants, title, roomConfig);
+  }
+
+  updateGroupChatRoom(
+    chatId: string,
+    updates: {
+      roomConfig?: Partial<GroupChatRoomConfig>;
+      roomState?: Partial<GroupChatRoomState>;
+    },
+  ): ChatRecord {
+    let nextChat = this.repository.getChat(chatId);
+    if (!nextChat) {
+      throw new Error("会话不存在，请先创建会话。");
+    }
+
+    if (updates.roomConfig) {
+      nextChat = this.repository.updateChatRoomConfig(chatId, updates.roomConfig);
+    }
+    if (updates.roomState) {
+      nextChat = this.repository.updateChatRoomState(chatId, updates.roomState);
+    }
+
+    return nextChat;
   }
 
   /** 将媒体相对路径转为 file:// URL。 */
@@ -241,32 +268,19 @@ export class AppRuntime {
   }
 
   /** 重建 Elasticsearch 对话索引。 */
-  async rebuildDialogueIndex(): Promise<{ indexedCount: number }> {
-    return this.elasticsearchService.buildDialogueIndex();
+  async rebuildDialogueIndex(
+    onProgress?: (progress: BackendJobProgress) => void,
+  ): Promise<{ indexedCount: number }> {
+    return this.elasticsearchService.buildDialogueIndex(onProgress);
   }
 
-  /**
-   * 单聊记忆处理：提取情景记忆(L2)并整合核心记忆(L3)。
-   *
-   * 与群聊 GroupChatCoordinator.processMemories 保持一致的处理方式：
-   * - 错误隔离，不抛出，仅记录警告
-   * - 通过 trackAsyncJob 注册，确保 SSE 关闭前完成
-   */
-  private async processSingleChatMemories(
-    chatId: string,
-    roleId: string,
-    finalHistory: ChatMessage[],
-  ): Promise<void> {
-    try {
-      const character = this.repository.getCharacter(roleId);
-      if (!character) return;
-      // 提取情景记忆 (L2)：从最新一轮对话中提炼关键信息并写入 SQLite + ES
-      await this.memoryService.extractAndPersist(chatId, character, finalHistory);
-      // 整合核心记忆 (L3)：定期从情景记忆中提炼用户画像和关系状态
-      await this.memoryService.consolidateCoreMemory(chatId, character);
-    } catch (error) {
-      console.warn(`[AppRuntime] 单聊记忆处理失败 for ${roleId}:`, error);
-    }
+  private async cleanupMessagesMedia(messages: ChatMessage[]): Promise<void> {
+    const relativePaths = messages.flatMap((message) => {
+      const attachments = message.metadata?.attachments?.map((attachment) => attachment.relativePath) ?? [];
+      const audio = message.metadata?.audio?.relativePath ? [message.metadata.audio.relativePath] : [];
+      return [...attachments, ...audio];
+    });
+    await this.mediaManager.cleanupRelativePaths(relativePaths);
   }
 
   /**
@@ -296,6 +310,17 @@ export class AppRuntime {
     }
 
     // 1. 持久化用户消息和附件
+    if (request.mode === "group") {
+      this.updateGroupChatRoom(request.chatId, {
+        roomConfig: {
+          targetRoleId: request.targetRoleId ?? request.mentionTarget ?? null,
+        },
+        roomState: {
+          lastTargetRoleId: request.targetRoleId ?? request.mentionTarget ?? null,
+        },
+      });
+    }
+
     const userMessageId = randomUUID();
     const userAttachments = await this.mediaManager.persistAttachments(
       request.chatId,
@@ -315,117 +340,47 @@ export class AppRuntime {
       metadata: userMetadata,
     });
 
-    // 2. 创建 SSE 流式通道
-    const stream = this.sseService.createSession();
-    // 若有 @mention 目标，将其排到参与列表第一位
-    const orderedParticipants =
-      request.mode === "group" && request.mentionTarget
-        ? [
-            request.mentionTarget,
-            ...request.participants.filter((participant) => participant !== request.mentionTarget),
-          ]
-        : request.participants;
+    return this.chatSessionService.launchGeneration(chat, request, hooks);
+  }
 
-    const state = {
-      chatId: chat.id,
-      streamId: stream.streamId,
-      mode: request.mode,
-      participants:
-        request.mode === "single"
-          ? [orderedParticipants[0] ?? chat.participants[0]]
-          : orderedParticipants,
-      mentionTarget: request.mentionTarget ?? null,
-      activeRoleIndex: 0,
-      currentRoleId:
-        request.mode === "single" ? orderedParticipants[0] ?? chat.participants[0] : undefined,
-      messages: this.repository.listMessages(chat.id),
-      retrievedDocs: [],
-      memories: [],
-      // 单聊：按角色隔离摘要；群聊：初始摘要会被 retrieveMemoryNode 按当前角色重取
-      summary: this.repository.getSummary(
-        chat.id,
-        request.mode === "single" ? (orderedParticipants[0] ?? chat.participants[0]) : undefined,
-      ),
-      prompt: "",
-      output: "",
-      speechTextJa: "",
-      retryCount: 0,
-      validationIssue: undefined,
-      character: undefined,
-    };
-
-    const backgroundJobs: Promise<unknown>[] = [];
-    const graphDependencies: GraphDependencies = {
-      ...this.baseGraphDependencies,
-      trackAsyncJob: (job) => {
-        backgroundJobs.push(job);
-      },
-    };
-    if (hooks.jobId) {
-      hooks.onJobRunning?.(hooks.jobId, stream.streamId);
+  async editMessageAndRegenerate(
+    messageId: string,
+    content: string,
+    hooks: ChatJobHooks = {},
+  ): Promise<ChatSendResult> {
+    const normalizedContent = content.trim();
+    if (!normalizedContent) {
+      throw new Error("编辑后的消息内容不能为空。");
     }
 
-    // 初始化 LangSmith tracer（若启用）
-    const tracer =
-      this.config.langsmithTracing && this.config.langsmithApiKey
-        ? new LangChainTracer({ projectName: this.config.langsmithProject })
-        : undefined;
+    const message = this.repository.getMessage(messageId);
+    if (!message) {
+      throw new Error("消息不存在。");
+    }
+    if (message.role !== "user") {
+      throw new Error("只有用户消息支持编辑后重生成。");
+    }
 
-    // 3. 在后台异步执行 agent 流程，不阻塞响应返回
-    // 使用立即调用的 async 函数表达式（IIFE）而非 queueMicrotask：
-    // - 避免微任务优先级过高阻塞 I/O
-    // - 语义更清晰，错误处理更直观
-    void (async () => {
-      try {
-        if (request.mode === "group") {
-          const coordinator = new GroupChatCoordinator(graphDependencies);
-          await coordinator.runSession({
-            chatId: chat.id,
-            streamId: stream.streamId,
-            participants: orderedParticipants,
-            mentionTarget: request.mentionTarget ?? null,
-            messages: state.messages,
-            tracer,
-          });
-        } else {
-          const runner = createSingleChatGraph(graphDependencies);
-          const config: Record<string, unknown> = { recursionLimit: 100 };
-          if (tracer) {
-            config.callbacks = [tracer];
-          }
-          const result = (await runner.invoke(state, config)) as ChatGraphState;
-          // 单聊记忆处理：异步提取情景记忆(L2)和整合核心记忆(L3)
-          // 与群聊 GroupChatCoordinator.processMemories 保持一致，通过 trackAsyncJob 注册确保 SSE 关闭前完成
-          const memoryJob = this.processSingleChatMemories(
-            chat.id,
-            state.currentRoleId ?? state.participants[0],
-            result.messages ?? state.messages,
-          );
-          graphDependencies.trackAsyncJob?.(memoryJob);
-        }
-        await Promise.allSettled(backgroundJobs);
-        if (hooks.jobId) {
-          hooks.onJobCompleted?.(hooks.jobId);
-        }
-      } catch (error) {
-        const errorMessage = error instanceof Error ? error.message : "未知错误";
-        this.sseService.publish({
-          type: "error",
-          streamId: stream.streamId,
-          message: errorMessage,
-        });
-        if (hooks.jobId) {
-          hooks.onJobFailed?.(hooks.jobId, errorMessage);
-        }
-      } finally {
-        this.sseService.close(stream.streamId);
-      }
-    })();
+    const chat = this.repository.getChat(message.chatId);
+    if (!chat) {
+      throw new Error("会话不存在，请先创建会话。");
+    }
 
-    return {
-      jobId: hooks.jobId ?? stream.streamId,
-      ...stream,
-    };
+    const allMessages = this.repository.listMessages(chat.id);
+    const targetIndex = allMessages.findIndex((entry) => entry.id === messageId);
+    const removedMessages = targetIndex >= 0 ? allMessages.slice(targetIndex + 1) : [];
+
+    this.repository.updateMessageContent(messageId, normalizedContent);
+    this.repository.truncateMessagesAfter(chat.id, messageId);
+    this.repository.clearMemories(chat.id);
+    await this.elasticsearchService.deleteMemoriesBySession(chat.id);
+    await this.cleanupMessagesMedia(removedMessages);
+
+    return this.chatSessionService.launchGeneration(chat, {
+      mode: chat.mode,
+      participants: chat.participants,
+      mentionTarget: chat.mentionTarget ?? null,
+    }, hooks);
   }
 
   /**
@@ -433,8 +388,3 @@ export class AppRuntime {
    * 返回可用于持久化到数据库的相对路径信息。
    */
 }
-
-
-
-
-

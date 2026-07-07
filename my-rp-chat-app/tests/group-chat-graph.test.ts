@@ -66,10 +66,16 @@ function createDeps(repository: ChatRepository, mockReturn: Record<string, unkno
     llmService: {
       streamStructuredCompletion: vi
         .fn()
-        .mockImplementation(async ({ onToken }: StructuredCompletionRequest) => {
-          await onToken(mockReturn.content as string);
-          return mockReturn;
-        }),
+          .mockImplementation(async ({ systemPrompt, onToken }: StructuredCompletionRequest) => {
+            const selfAddress = extractSelfAddress(systemPrompt);
+            const content = String(mockReturn.content ?? `${selfAddress}回应`);
+            const normalizedContent = content.includes(selfAddress) ? content : `${selfAddress}${content}`;
+            await onToken(normalizedContent);
+            return {
+              ...mockReturn,
+              content: normalizedContent,
+            };
+          }),
     } as never,
     memoryService: {
       recall: vi.fn().mockResolvedValue([]),
@@ -230,6 +236,86 @@ describe("GroupChatCoordinator", () => {
 
     // 丛雨 → 茉子 (nominated) → 芳乃 (fallback) → 丛雨 (new round)
     expect(assistantMessages.slice(0, 3)).toEqual(["丛雨", "茉子", "芳乃"]);
+    repository.close();
+  });
+
+  it("injects participant relationship guidance in group mode even when the user does not name the other character", async () => {
+    const tempDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "rp-chat-group-relationship-"));
+    createdDirectories.push(tempDirectory);
+
+    const repository = new ChatRepository(path.join(tempDirectory, "test.sqlite"));
+    repository.init();
+    repository.upsertCharacters([
+      {
+        ...createCharacter("丛雨"),
+        promptProfile: {
+          ...createCharacter("丛雨").promptProfile,
+          relationships: {
+            芳乃: {
+              relation: "被尊敬的对象",
+              attitude: "尊敬且友善",
+              closeness: 7,
+            },
+          },
+        },
+      },
+      createCharacter("芳乃"),
+    ]);
+    const chat = repository.createChat("group", ["丛雨", "芳乃"], "测试群聊");
+    repository.appendMessage({ chatId: chat.id, role: "user", content: "大家好" });
+
+    let sawCongYuRelationshipGuidance = false;
+    const streamStructuredCompletion = vi
+      .fn()
+      .mockImplementation(async ({ systemPrompt, onToken }: StructuredCompletionRequest) => {
+        if (systemPrompt.includes("你现在扮演 丛雨")) {
+          expect(systemPrompt).toContain("你与芳乃的关系");
+          expect(systemPrompt).toContain("被尊敬的对象");
+          sawCongYuRelationshipGuidance = true;
+        }
+        const selfAddress = extractSelfAddress(systemPrompt);
+        const content = `${selfAddress}回应`;
+        await onToken(content);
+        return { content, speechTextJa: "", raw: "{}" };
+      });
+
+    const coordinator = new GroupChatCoordinator(
+      {
+        repository,
+        characterService: {} as never,
+        elasticsearchService: {
+          hybridSearch: vi.fn().mockResolvedValue([]),
+        } as never,
+        llmService: {
+          streamStructuredCompletion,
+        } as never,
+        memoryService: {
+          recall: vi.fn().mockResolvedValue([]),
+          getSummary: vi.fn().mockReturnValue(undefined),
+          getCoreMemory: vi.fn().mockReturnValue(null),
+          extractAndPersist: vi.fn().mockResolvedValue(null),
+          consolidateCoreMemory: vi.fn().mockResolvedValue(null),
+        } as never,
+        sseService: {
+          publish: vi.fn(),
+        } as never,
+      },
+      2,
+      1,
+      2,
+      0,
+    );
+
+    await coordinator.runSession({
+      chatId: chat.id,
+      streamId: "stream-test",
+      participants: ["丛雨", "芳乃"],
+      mentionTarget: null,
+      messages: repository.listMessages(chat.id),
+    });
+
+    expect(streamStructuredCompletion).toHaveBeenCalled();
+    expect(sawCongYuRelationshipGuidance).toBe(true);
     repository.close();
   });
 
@@ -863,6 +949,78 @@ describe("GroupChatCoordinator", () => {
     expect(assistantMessages.length).toBe(10);
 
     await new Promise((resolve) => setTimeout(resolve, 100));
+    repository.close();
+  });
+
+  it("publishes round statistics after each completed round", async () => {
+    const tempDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "rp-chat-round-stats-"));
+    createdDirectories.push(tempDirectory);
+
+    const repository = new ChatRepository(path.join(tempDirectory, "test.sqlite"));
+    repository.init();
+    repository.upsertCharacters([createCharacter("丛雨"), createCharacter("芳乃")]);
+    const chat = repository.createChat("group", ["丛雨", "芳乃"], "测试群聊");
+    repository.appendMessage({ chatId: chat.id, role: "user", content: "大家好" });
+
+    const publish = vi.fn();
+    const coordinator = new GroupChatCoordinator(
+      {
+        repository,
+        characterService: {} as never,
+        elasticsearchService: {
+          hybridSearch: vi.fn().mockResolvedValue([]),
+        } as never,
+        llmService: {
+          streamStructuredCompletion: vi
+            .fn()
+            .mockImplementation(async ({ systemPrompt, onToken }: StructuredCompletionRequest) => {
+              const selfAddress = extractSelfAddress(systemPrompt);
+              const content = `${selfAddress}回应`;
+              await onToken(content);
+              return { content, speechTextJa: "", raw: "{}" };
+            }),
+        } as never,
+        memoryService: {
+          recall: vi.fn().mockResolvedValue([]),
+          getSummary: vi.fn().mockReturnValue(undefined),
+          getCoreMemory: vi.fn().mockReturnValue(null),
+          extractAndPersist: vi.fn().mockResolvedValue(null),
+          consolidateCoreMemory: vi.fn().mockResolvedValue(null),
+        } as never,
+        sseService: {
+          publish,
+        } as never,
+      },
+      2,
+      1,
+      undefined,
+      0,
+    );
+
+    await coordinator.runSession({
+      chatId: chat.id,
+      streamId: "stream-test",
+      participants: ["丛雨", "芳乃"],
+      mentionTarget: null,
+      messages: repository.listMessages(chat.id),
+    });
+
+    const roundStatsEvents = publish.mock.calls
+      .map(([event]) => event)
+      .filter((event) => event.type === "round_stats");
+
+    expect(roundStatsEvents).toHaveLength(1);
+    expect(roundStatsEvents[0]).toMatchObject({
+      type: "round_stats",
+      streamId: "stream-test",
+      round: 1,
+      generatedCount: 2,
+      speakers: ["丛雨", "芳乃"],
+      skipped: [],
+      failed: [],
+    });
+    expect(roundStatsEvents[0].durationMs).toBeGreaterThanOrEqual(0);
+
     repository.close();
   });
 });

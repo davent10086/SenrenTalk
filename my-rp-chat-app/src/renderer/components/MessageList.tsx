@@ -15,8 +15,10 @@ interface MessageListProps {
   drafts: Record<string, string>;
   agentStatus: Record<string, string>;
   mediaUrls: Record<string, string>;
+  isStreaming?: boolean;
   retryingAudioIds: Record<string, boolean>;
   onRetryAudio?: (messageId: string) => Promise<void>;
+  onEditAndRegenerate?: (messageId: string, content: string) => Promise<void>;
   onRefreshMessages?: () => Promise<void>;
 }
 
@@ -29,7 +31,7 @@ interface MessageListProps {
  */
 export function MessageList({
   messages, drafts, agentStatus, mediaUrls,
-  retryingAudioIds, onRetryAudio, onRefreshMessages,
+  isStreaming, retryingAudioIds, onRetryAudio, onEditAndRegenerate, onRefreshMessages,
 }: MessageListProps) {
   const logRef = useRef<HTMLDivElement>(null);
 
@@ -60,8 +62,10 @@ export function MessageList({
             key={message.id}
             message={message}
             mediaUrls={mediaUrls}
+            isStreaming={isStreaming}
             isRetrying={retryingAudioIds}
             onRetryAudio={onRetryAudio}
+            onEditAndRegenerate={onEditAndRegenerate}
             onRefreshMessages={onRefreshMessages}
           />
         ))}

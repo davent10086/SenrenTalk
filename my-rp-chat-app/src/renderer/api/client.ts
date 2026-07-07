@@ -7,8 +7,10 @@ import type {
   BootstrapPayload,
   ChatMessage,
   ChatRecord,
+  CreateChatRequest,
   ChatRequest,
   ChatSendResult,
+  UpdateGroupChatRoomRequest,
   PublicSettings,
 } from "../../common/types";
 import type { PendingAttachmentDraft } from "../types";
@@ -81,6 +83,14 @@ export async function listJobs(): Promise<BackendJob[]> {
   return readJsonResponse<BackendJob[]>(await fetch(buildApiUrl("/api/jobs")));
 }
 
+export async function cancelJob(jobId: string): Promise<BackendJob> {
+  return readJsonResponse<BackendJob>(
+    await fetch(buildApiUrl(`/api/jobs/${encodeURIComponent(jobId)}/cancel`), {
+      method: "POST",
+    }),
+  );
+}
+
 /**
  * 创建一个新的聊天会话
  * @param payload.mode - 聊天模式（如单人、群聊等）
@@ -88,14 +98,25 @@ export async function listJobs(): Promise<BackendJob[]> {
  * @param payload.title - 可选的会话标题
  * @returns 新创建的会话记录
  */
-export async function createChat(payload: {
-  mode: ChatRequest["mode"];
-  participants: string[];
-  title?: string;
-}): Promise<ChatRecord> {
+export async function createChat(payload: CreateChatRequest): Promise<ChatRecord> {
   return readJsonResponse<ChatRecord>(
     await fetch(buildApiUrl("/api/chats"), {
       method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+    }),
+  );
+}
+
+export async function updateGroupChatRoom(
+  chatId: string,
+  payload: UpdateGroupChatRoomRequest,
+): Promise<ChatRecord> {
+  return readJsonResponse<ChatRecord>(
+    await fetch(buildApiUrl(`/api/chats/${encodeURIComponent(chatId)}/room`), {
+      method: "PATCH",
       headers: {
         "Content-Type": "application/json",
       },
@@ -153,6 +174,21 @@ export async function regenerateMessageAudio(messageId: string): Promise<ChatMes
   );
 }
 
+export async function editMessageAndRegenerate(
+  messageId: string,
+  content: string,
+): Promise<ChatSendResult> {
+  return readJsonResponse<ChatSendResult>(
+    await fetch(buildApiUrl(`/api/messages/${encodeURIComponent(messageId)}/edit-and-regenerate`), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ content }),
+    }),
+  );
+}
+
 /**
  * 向指定会话发送消息（支持文本内容和文件附件）
  * 附件以 multipart/form-data 格式上传
@@ -168,6 +204,9 @@ export async function sendMessage(payload: Omit<ChatRequest, "attachments"> & {
   formData.append("participants", JSON.stringify(payload.participants));
   if (payload.mentionTarget) {
     formData.append("mentionTarget", payload.mentionTarget);
+  }
+  if (payload.targetRoleId) {
+    formData.append("targetRoleId", payload.targetRoleId);
   }
 
   const attachments = payload.attachments ?? [];

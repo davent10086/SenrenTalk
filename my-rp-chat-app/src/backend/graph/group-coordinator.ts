@@ -1,56 +1,81 @@
 import { type LangChainTracer } from "@langchain/core/tracers/tracer_langchain";
-import { createSingleChatGraph, type ChatGraphState, type GraphDependencies } from "./chat-graphs";
-import type { ChatMessage, ChatMode } from "../../common/types";
+import {
+  createDefaultGroupChatRoomConfig,
+  createDefaultGroupChatRoomState,
+  type ChatMessage,
+  type ChatMode,
+  type GroupChatGenerationReason,
+  type GroupChatRoomConfig,
+  type GroupChatSkipReason,
+} from "../../common/types";
+import { createSingleChatGraph } from "./chat-graphs";
+import type { ChatGraphState, GraphDependencies } from "./graph-types";
 
-/** 群聊模式下默认最大生成消息数（上限，实际按参与者数量动态收紧）。 */
-const DEFAULT_MAX_MESSAGES = 15;
-/** 默认最大轮次数（每轮每个角色至少发言一次）。 */
-const DEFAULT_MAX_ROUNDS = 2;
-/** 连续多少轮无人发言则自动退出。 */
 const DEFAULT_IDLE_STREAK_THRESHOLD = 2;
-/** 角色间发言的最小间隔（毫秒），避免消息密集推送造成信息过载。 */
 const TURN_BREATHING_DELAY_MS = 200;
 
-/**
- * 群聊协调器。
- *
- * 负责管理多角色群聊的全生命周期：
- * - @mention 定向发言：第一轮仅被 @ 的角色发言
- * - 动态排序：agent 可通过 nextSpeaker 指定下一位发言者
- * - 异步记忆处理：所有 agent 发言结束后批量提取/整合记忆
- *
- * 使用方式：AppRuntime.sendMessage 中单次调用 {@link runSession}。
- */
+function normalizeText(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/\s+/g, "")
+    .replace(/[.,!?;:'"`~\-_=+()[\]{}<>/\\|@#$%^&*，。！？；：、（）【】《》“”‘’]/g, "");
+}
+
+function isSimilarToPrevious(previous: string | undefined, current: string): boolean {
+  if (!previous) {
+    return false;
+  }
+  const left = normalizeText(previous);
+  const right = normalizeText(current);
+  if (!left || !right) {
+    return false;
+  }
+  if (left === right) {
+    return true;
+  }
+  if (left.length <= 30 || right.length <= 30) {
+    return left.includes(right) || right.includes(left);
+  }
+  return false;
+}
+
 export class GroupChatCoordinator {
   private readonly deps: GraphDependencies;
   private readonly agents = new Map<string, ReturnType<typeof createSingleChatGraph>>();
-  private readonly maxMessages: number;
-  private readonly maxRounds: number;
+  private readonly roomConfig: GroupChatRoomConfig;
   private readonly idleStreakThreshold: number;
   private readonly breathingDelayMs: number;
+  private readonly legacyCompatibility: boolean;
 
-  /**
-   * @param deps                 图执行依赖
-   * @param maxMessages          本轮会话最大生成消息数（默认 15，实际按参与者数量动态收紧）
-   * @param maxRounds            最大轮次数，每轮至少一轮所有角色发言（默认 2）
-   * @param idleStreakThreshold 连续多少轮无人发言则自动退出（默认 2）
-   * @param breathingDelayMs    角色间发言的最小间隔毫秒数，避免信息过载（默认 500）
-   */
   constructor(
     deps: GraphDependencies,
-    maxMessages = DEFAULT_MAX_MESSAGES,
-    maxRounds = DEFAULT_MAX_ROUNDS,
-    idleStreakThreshold = DEFAULT_IDLE_STREAK_THRESHOLD,
+    roomConfigOrMaxMessages?: Partial<GroupChatRoomConfig> | number,
+    maxRoundsOrIdleStreakThreshold = DEFAULT_IDLE_STREAK_THRESHOLD,
+    idleStreakThresholdOrBreathingDelay = TURN_BREATHING_DELAY_MS,
     breathingDelayMs = TURN_BREATHING_DELAY_MS,
   ) {
     this.deps = deps;
-    this.maxMessages = maxMessages;
-    this.maxRounds = maxRounds;
-    this.idleStreakThreshold = idleStreakThreshold;
-    this.breathingDelayMs = breathingDelayMs;
+    if (typeof roomConfigOrMaxMessages === "number" || roomConfigOrMaxMessages === undefined) {
+      this.legacyCompatibility = true;
+      this.roomConfig = {
+        ...createDefaultGroupChatRoomConfig(2),
+        mode: maxRoundsOrIdleStreakThreshold <= 1 ? "single_round" : "free_chat",
+        maxMessages: typeof roomConfigOrMaxMessages === "number" ? roomConfigOrMaxMessages : 15,
+        maxRounds: maxRoundsOrIdleStreakThreshold,
+      };
+      this.idleStreakThreshold = idleStreakThresholdOrBreathingDelay;
+      this.breathingDelayMs = breathingDelayMs;
+      return;
+    }
+    this.legacyCompatibility = false;
+    this.roomConfig = {
+      ...createDefaultGroupChatRoomConfig(2),
+      ...roomConfigOrMaxMessages,
+    };
+    this.idleStreakThreshold = maxRoundsOrIdleStreakThreshold;
+    this.breathingDelayMs = idleStreakThresholdOrBreathingDelay;
   }
 
-  /** 懒加载创建或获取指定角色的 agent 图实例。 */
   private getOrCreateAgent(roleId: string): ReturnType<typeof createSingleChatGraph> {
     let agent = this.agents.get(roleId);
     if (!agent) {
@@ -60,113 +85,168 @@ export class GroupChatCoordinator {
     return agent;
   }
 
-  /**
-   * 构造群聊上下文提示词。
-   *
-   * 包含参与者列表、最近发言记录、@mention 指令、nextSpeaker 引导、
-   * 自愿跳过（skip）指令等。
-   *
-   * 注意：Turn 0 的 @mention 模式下仅被 @ 的角色会被调用，
-   * 因此无需为非目标角色构造"保持沉默"指令。
-   */
-  private formatGroupContext(
+  private ensureNotAborted(): void {
+    if (!this.deps.abortSignal?.aborted) {
+      return;
+    }
+    const error = new Error("消息生成已中断");
+    error.name = "AbortError";
+    throw error;
+  }
+
+  private buildGroupContext(
     roleId: string,
     participants: string[],
     sharedHistory: ChatMessage[],
-    turnCount: number,
-    mentionTarget?: string | null,
+    round: number,
+    targetRoleId: string | null,
+    antiRepeatInstruction?: string,
   ): string {
     const recentMessages = sharedHistory
       .slice(-8)
-      .map((m) => `${m.roleId ?? (m.role === "user" ? "用户" : m.role)}：${m.content}`)
+      .map((message) => `${message.roleId ?? (message.role === "user" ? "用户" : message.role)}：${message.content}`)
       .join("\n");
 
-    const otherParticipants = participants.filter((p) => p !== roleId);
-
     const lines = [
-      "=== 群聊模式 ===",
-      `群聊参与者：${participants.join("、")}`,
-      `你的名字是 ${roleId}。`,
-      `这是第 ${turnCount + 1} 轮对话。`,
-      // 群聊长度约束：避免每个角色长篇大论导致信息过载
-      `群聊中应简短回应（1-3 句），聚焦当前角色视角，避免长篇大论。`,
+      "=== 群聊房间 ===",
+      `房间模式：${this.roomConfig.mode}`,
+      `参与角色：${participants.join("、")}`,
+      `当前角色：${roleId}`,
+      `当前轮次：第 ${round} 轮`,
+      this.roomConfig.topic ? `房间主题：${this.roomConfig.topic}` : "",
+      this.roomConfig.scene ? `当前场景：${this.roomConfig.scene}` : "",
+      targetRoleId ? `当前定向目标：${targetRoleId}` : "",
+      "请用 1-3 句完成本轮回应，聚焦当前角色视角，避免重复上轮原话。",
+      antiRepeatInstruction ?? "",
+      recentMessages ? `=== 最近消息 ===\n${recentMessages}` : "",
     ];
 
-    if (mentionTarget) {
-      // Turn 0 的 @mention 模式：仅被 @ 的角色会进入此分支
-      lines.push(`用户 @了 ${mentionTarget}，这条消息是给 ${mentionTarget} 的。`);
-      lines.push("用户@了你，请优先回应。");
+    if (this.roomConfig.mode === "single_round") {
+      lines.push("本房间为单轮模式，本轮结束后不要继续主动拉起下一轮对话。");
+    } else if (this.roomConfig.mode === "host_mode") {
+      if (this.roomConfig.hostRoleId === roleId) {
+        lines.push("你是主持角色，需要先回应用户，再视情况点名下一位角色。");
+      } else {
+        lines.push("这是主持模式，请优先回应主持角色或用户刚刚点名的内容。");
+      }
+    } else {
+      lines.push("你可以在需要时通过 nextSpeaker 指定下一位角色，但不要无意义续聊。");
     }
 
-    /** 动态排序指令的最大轮次，超过后不再提示可指定 nextSpeaker。 */
-    const DYNAMIC_ORDERING_ROUNDS = 2;
-
-    // Dynamic ordering instruction
-    if (otherParticipants.length > 0 && !mentionTarget && turnCount < DYNAMIC_ORDERING_ROUNDS) {
-      lines.push(
-        `你可以自由选择回应对象。`,
-        `如果你想对某个特定角色说话，请在 JSON 回复中添加 "nextSpeaker" 字段，`,
-        `指定你希望接下来发言的角色名。可选值：${otherParticipants.join("、")}。`,
-        `如果不需要指定，就不要加这个字段。`,
-        `注意：群聊不宜过长，2~3 轮后应主动停止指定 nextSpeaker，让对话自然收尾。`,
-      );
-    } else if (!mentionTarget && turnCount >= DYNAMIC_ORDERING_ROUNDS) {
-      // 超过动态排序轮次，提示自然结束
-      lines.push(
-        `群聊已进入尾声。请完成本轮对话后主动停止发言。`,
-        `不要在 JSON 中添加 "nextSpeaker" 字段，让对话自然结束。`,
-      );
-    }
-
-    // 自愿跳过指令：agent 可在任意轮次选择不发言
-    lines.push(
-      `如果你觉得当前轮次没有合适的内容可说，可以在 JSON 中添加 "skip": true 跳过本次发言。`,
-      `跳过时 content 和 speechTextJa 可以为空字符串。`,
-    );
-
-    lines.push("");
-    if (recentMessages) {
-      lines.push(`=== 最近的群聊消息 ===\n${recentMessages}`);
-    }
-
-    return lines.filter(Boolean).join("\n").trim();
+    return lines.filter(Boolean).join("\n");
   }
 
-  /**
-   * 执行单个 agent 的一次发言。
-   *
-   * 构造 groupContext + 初始状态，调用 agent.invoke 运行完整的
-   * prepare → retrieve → build → LLM → validate → save 流程。
-   *
-   * @returns 更新后的消息列表、agent 指定的 nextSpeaker、以及是否自愿跳过
-   */
+  private publishRoomState(
+    chatId: string,
+    updates: Parameters<GraphDependencies["repository"]["updateChatRoomState"]>[1],
+  ): void {
+    this.deps.repository.updateChatRoomState(chatId, updates);
+  }
+
+  private resolveReplyTarget(
+    sharedHistory: ChatMessage[],
+    targetRoleId: string | null,
+  ): { replyToMessageId?: string; replyToRoleId?: string } {
+    const lastMessage = sharedHistory.at(-1);
+    const lastUserMessage = [...sharedHistory].reverse().find((message) => message.role === "user");
+    return {
+      replyToMessageId: lastUserMessage?.id,
+      replyToRoleId: targetRoleId ?? lastMessage?.roleId ?? undefined,
+    };
+  }
+
+  private findPreviousAssistantMessage(sharedHistory: ChatMessage[], roleId: string): ChatMessage | undefined {
+    for (let index = sharedHistory.length - 1; index >= 0; index -= 1) {
+      const message = sharedHistory[index];
+      if (message.role === "assistant" && message.roleId === roleId) {
+        return message;
+      }
+    }
+    return undefined;
+  }
+
+  private planRound(params: {
+    participants: string[];
+    targetRoleId: string | null;
+    round: number;
+    sharedHistory: ChatMessage[];
+  }): string[] {
+    const { participants, targetRoleId, round } = params;
+    if (this.roomConfig.mode === "host_mode") {
+      const hostRoleId = this.roomConfig.hostRoleId && participants.includes(this.roomConfig.hostRoleId)
+        ? this.roomConfig.hostRoleId
+        : participants[0];
+      const others = participants.filter((participant) => participant !== hostRoleId);
+      return [hostRoleId, ...others];
+    }
+
+    if (targetRoleId) {
+      const rest = participants.filter((participant) => participant !== targetRoleId);
+      if (this.roomConfig.mode === "single_round") {
+        return [targetRoleId, ...rest];
+      }
+      return [targetRoleId, ...rest];
+    }
+
+    if (this.roomConfig.mode === "single_round") {
+      return [...participants];
+    }
+
+    if (this.roomConfig.speakerPolicy === "round_robin") {
+      const offset = (round - 1) % participants.length;
+      return [...participants.slice(offset), ...participants.slice(0, offset)];
+    }
+
+    return [...participants];
+  }
+
   private async runAgentTurn(params: {
     roleId: string;
     participants: string[];
     sharedHistory: ChatMessage[];
     chatId: string;
     streamId: string;
-    mentionTarget: string | null;
-    turnCount: number;
+    targetRoleId: string | null;
+    round: number;
+    turnIndex: number;
     tracer?: LangChainTracer;
-  }): Promise<{ messages: ChatMessage[]; nextSpeaker?: string; skip?: boolean }> {
-    const { roleId, participants, sharedHistory, chatId, streamId, mentionTarget, turnCount, tracer } = params;
-
-    const groupContext = this.formatGroupContext(
+    antiRepeatInstruction?: string;
+    generationReason: GroupChatGenerationReason;
+  }): Promise<{
+    messages: ChatMessage[];
+    nextSpeaker?: string;
+    skip?: boolean;
+    skipReason?: GroupChatSkipReason;
+  }> {
+    const {
       roleId,
       participants,
       sharedHistory,
-      turnCount,
-      mentionTarget,
-    );
+      chatId,
+      streamId,
+      targetRoleId,
+      round,
+      turnIndex,
+      tracer,
+      antiRepeatInstruction,
+      generationReason,
+    } = params;
 
-    const agent = this.getOrCreateAgent(roleId);
+    const groupContext = this.buildGroupContext(
+      roleId,
+      participants,
+      sharedHistory,
+      round,
+      targetRoleId,
+      antiRepeatInstruction,
+    );
+    const replyTarget = this.resolveReplyTarget(sharedHistory, targetRoleId);
     const state = {
       chatId,
       streamId,
       mode: "group" as ChatMode,
       participants,
-      mentionTarget,
+      mentionTarget: targetRoleId,
       activeRoleIndex: 0,
       currentRoleId: roleId,
       messages: sharedHistory,
@@ -182,6 +262,14 @@ export class GroupChatCoordinator {
       coreMemory: undefined as string | undefined,
       groupContext,
       skip: false,
+      roomConfig: this.roomConfig,
+      currentRound: round,
+      turnIndex,
+      replyToMessageId: replyTarget.replyToMessageId,
+      replyToRoleId: replyTarget.replyToRoleId,
+      generationReason,
+      skipReason: undefined,
+      antiRepeatInstruction,
     };
 
     const config: Record<string, unknown> = { recursionLimit: 100 };
@@ -189,34 +277,60 @@ export class GroupChatCoordinator {
       config.callbacks = [tracer];
     }
 
-    const result = await agent.invoke(state, config);
+    const result = await this.getOrCreateAgent(roleId).invoke(state, config);
     return {
       messages: result.messages,
       nextSpeaker: result.nextSpeaker as string | undefined,
       skip: result.skip as boolean | undefined,
+      skipReason: result.skipReason as GroupChatSkipReason | undefined,
     };
   }
 
-  /**
-   * 异步批量处理记忆：为每个 participant 提取情景记忆（L2）并整合核心记忆（L3）。
-   * 在 runSession 末尾 fire-and-forget 调用，不阻塞对话流。
-   */
+  private publishRoleSkipped(
+    streamId: string,
+    roleId: string,
+    round: number,
+    reason: GroupChatSkipReason,
+    message: string,
+  ): void {
+    this.deps.sseService.publish({
+      type: "role_skipped",
+      streamId,
+      roleId,
+      round,
+      reason,
+      message,
+    });
+  }
+
+  private publishRoomFinished(
+    streamId: string,
+    round: number,
+    generatedCount: number,
+    reason: string,
+  ): void {
+    this.deps.sseService.publish({
+      type: "room_finished",
+      streamId,
+      round,
+      generatedCount,
+      reason,
+    });
+  }
+
   private async processMemories(
     chatId: string,
     participants: string[],
     finalHistory: ChatMessage[],
   ): Promise<void> {
-    // 并行处理所有角色的记忆提取与整合，错误隔离到单个角色
     await Promise.all(
       participants.map(async (roleId) => {
         try {
           const character = this.deps.repository.getCharacter(roleId);
-          if (!character) return;
-
-          // Extract episodic memory (L2)
+          if (!character) {
+            return;
+          }
           await this.deps.memoryService.extractAndPersist(chatId, character, finalHistory);
-
-          // Consolidate core memory (L3)
           await this.deps.memoryService.consolidateCoreMemory(chatId, character);
         } catch (error) {
           console.warn(`[GroupChatCoordinator] Memory processing failed for ${roleId}:`, error);
@@ -225,15 +339,7 @@ export class GroupChatCoordinator {
     );
   }
 
-  /**
-   * 运行群聊会话主流程。
-   *
-   * 1. Turn 0：@mention 定向发言（仅被 @ 的角色回复）
-   * 2. 后续轮次：agent 通过 nextSpeaker 动态决定发言顺序，
-   *    未指定时回退到参与者列表的轮询顺序
-   * 3. 所有 agent 发言完毕后，fire-and-forget 异步处理记忆
-   */
-  async runSession(params: {
+  private async runLegacySession(params: {
     chatId: string;
     streamId: string;
     participants: string[];
@@ -242,112 +348,76 @@ export class GroupChatCoordinator {
     tracer?: LangChainTracer;
   }): Promise<void> {
     const { chatId, streamId, participants, mentionTarget, messages, tracer } = params;
-
-    // 注册所有参与者 agent（懒初始化）
-    participants.forEach((p) => this.getOrCreateAgent(p));
-
-    // 动态密度控制：角色越多，单轮消息预算越紧（人均 2 条上限），
-    // 避免 5 角色场景下 15 条消息连续推送造成信息过载。
-    const effectiveMaxMessages = Math.min(this.maxMessages, participants.length * 2);
-
+    const effectiveMaxMessages = Math.min(this.roomConfig.maxMessages, participants.length * 2);
     let sharedHistory = [...messages];
     let generatedCount = 0;
-    let turnCount = 0;
-
-    // 跟踪本轮尚未发言的角色，全部发言后自动重置
+    let round = 1;
+    let nextSpeaker: string | undefined;
+    let idleStreak = 0;
     const unspoken = new Set<string>(participants);
+    let roundSpeakers: string[] = [];
+    let roundFailed: string[] = [];
 
-    /** 按原始参与顺序返回第一个未发言者。 */
-    function firstUnspoken(): string | undefined {
-      for (const p of participants) {
-        if (unspoken.has(p)) return p;
-      }
-      return undefined;
-    }
-
-    /** 根据 agent 指定的 nextSpeaker 确定实际下一个发言者。 */
-    function resolveNextSpeaker(preferred: string | undefined, currentUnspoken: Set<string>): string | undefined {
-      if (!preferred) return firstUnspoken();
-      // 优先使用 agent 指定的发言者（必须为有效参与者且本轮未发言）
-      if (participants.includes(preferred)) {
-        if (currentUnspoken.has(preferred)) return preferred;
-        // 已发言 → 回退到轮询顺序
+    const firstUnspoken = () => participants.find((participant) => unspoken.has(participant));
+    const resolveNextSpeaker = (preferred?: string) => {
+      if (preferred && participants.includes(preferred) && unspoken.has(preferred)) {
+        return preferred;
       }
       return firstUnspoken();
-    }
+    };
 
-    // ── Turn 0: @mention handling ──
-    // 注意：Turn 0 只是第 1 轮的一部分，不单独递增 turnCount。
-    // turnCount 仅在一轮所有角色发言完毕后递增。
-    const hasMention = mentionTarget != null;
-    if (hasMention) {
-      const speaker = mentionTarget!;
-      try {
-        const result = await this.runAgentTurn({
-          roleId: speaker,
-          participants,
-          sharedHistory,
-          chatId,
-          streamId,
-          mentionTarget: speaker,
-          turnCount,
-          tracer,
-        });
-        sharedHistory = result.messages;
-        // 自愿跳过不占用消息预算，但视为已轮到（从 unspoken 移除）
-        if (!result.skip) {
-          generatedCount++;
-        }
-        unspoken.delete(speaker);
-      } catch (error) {
-        const msg = error instanceof Error ? error.message : "未知错误";
-        console.error(`[GroupChatCoordinator] Agent ${speaker} failed:`, msg);
-        this.deps.sseService.publish({
-          type: "error", streamId, roleId: speaker,
-          message: `角色 ${speaker} 发言失败：${msg}`,
-        });
-      }
+    if (mentionTarget) {
+      const mentionResult = await this.runAgentTurn({
+        roleId: mentionTarget,
+        participants,
+        sharedHistory,
+        chatId,
+        streamId,
+        targetRoleId: mentionTarget,
+        round,
+        turnIndex: 1,
+        tracer,
+        generationReason: "mentioned",
+      });
+      sharedHistory = mentionResult.messages;
+      generatedCount += mentionResult.skip ? 0 : 1;
+      unspoken.delete(mentionTarget);
+      nextSpeaker = mentionResult.nextSpeaker;
     }
-
-    // ── Subsequent turns: agents determine order via nextSpeaker ──
-    let nextSpeaker: string | undefined = undefined;
-    // 连续多少轮完成时没有任何 agent 指定 nextSpeaker
-    let idleStreak = 0;
-    // 跟踪本轮是否有任何 agent 指定了 nextSpeaker
-    let roundHasNextSpeaker = false;
 
     while (generatedCount < effectiveMaxMessages) {
-      // 一轮结束：所有参与者都发言完毕
       if (unspoken.size === 0) {
-        // 检查 idleStreak：本轮没有任何 agent 指定 nextSpeaker 则递增
-        if (!roundHasNextSpeaker) {
-          idleStreak++;
+        if (!nextSpeaker) {
+          idleStreak += 1;
         } else {
           idleStreak = 0;
         }
-        turnCount++;
-
+        this.deps.sseService.publish({
+          type: "round_stats",
+          streamId,
+          round,
+          generatedCount: roundSpeakers.length,
+          speakers: [...roundSpeakers],
+          skipped: [],
+          failed: [...roundFailed],
+          durationMs: 0,
+        });
+        roundSpeakers = [];
+        roundFailed = [];
         if (idleStreak >= this.idleStreakThreshold) {
-          console.info(`[GroupChatCoordinator] 连续 ${idleStreak} 轮无人主动发言，退出`);
           break;
         }
-        if (turnCount >= this.maxRounds) {
-          console.info("[GroupChatCoordinator] 达到最大轮数，退出");
+        round += 1;
+        if (round > this.roomConfig.maxRounds) {
           break;
         }
-
-        // 重置一轮状态，开始新的一轮
-        participants.forEach((p) => unspoken.add(p));
-        roundHasNextSpeaker = false;
+        participants.forEach((participant) => unspoken.add(participant));
         nextSpeaker = undefined;
       }
 
-      const speaker = resolveNextSpeaker(nextSpeaker, unspoken);
-      if (!speaker) break;
-
-      // 角色间呼吸延迟：避免消息密集推送造成信息过载，给用户阅读时间
-      if (this.breathingDelayMs > 0) {
-        await new Promise((resolve) => setTimeout(resolve, this.breathingDelayMs));
+      const speaker = resolveNextSpeaker(nextSpeaker);
+      if (!speaker) {
+        break;
       }
 
       try {
@@ -357,37 +427,286 @@ export class GroupChatCoordinator {
           sharedHistory,
           chatId,
           streamId,
-          mentionTarget: null,
-          turnCount,
+          targetRoleId: null,
+          round,
+          turnIndex: participants.length - unspoken.size + 1,
           tracer,
+          generationReason: nextSpeaker ? "nominated" : "scheduled",
         });
         sharedHistory = result.messages;
-        // 自愿跳过不占用消息预算，但视为已轮到（从 unspoken 移除）
         if (!result.skip) {
-          generatedCount++;
+          generatedCount += 1;
+          roundSpeakers.push(speaker);
         }
-        unspoken.delete(speaker);
-
-        // Agent 指定的下一位发言者（即使跳过也可提名下一位）
         nextSpeaker = result.nextSpeaker;
-        if (nextSpeaker) {
-          roundHasNextSpeaker = true;
-        }
       } catch (error) {
-        const msg = error instanceof Error ? error.message : "未知错误";
-        console.error(`[GroupChatCoordinator] Agent ${speaker} failed:`, msg);
+        const message = error instanceof Error ? error.message : "未知错误";
+        roundFailed.push(speaker);
         this.deps.sseService.publish({
-          type: "error", streamId, roleId: speaker,
-          message: `角色 ${speaker} 发言失败：${msg}`,
+          type: "error",
+          streamId,
+          roleId: speaker,
+          message: `角色 ${speaker} 发言失败：${message}`,
         });
-        unspoken.delete(speaker);
         nextSpeaker = undefined;
       }
+      unspoken.delete(speaker);
     }
 
-    // ── Post-session: async memory extraction ──
-    // 通过 trackAsyncJob 注册，确保 app-runtime 关闭 SSE 前等待记忆处理完成，
-    // 避免应用退出时记忆提取被截断。错误隔离在 processMemories 内部完成。
+    if (unspoken.size === 0 && (roundSpeakers.length > 0 || roundFailed.length > 0)) {
+      this.deps.sseService.publish({
+        type: "round_stats",
+        streamId,
+        round,
+        generatedCount: roundSpeakers.length,
+        speakers: [...roundSpeakers],
+        skipped: [],
+        failed: [...roundFailed],
+        durationMs: 0,
+      });
+    }
+
+    const memoryJob = this.processMemories(chatId, participants, sharedHistory);
+    this.deps.trackAsyncJob?.(memoryJob);
+    memoryJob.catch((error) => {
+      console.error("[GroupChatCoordinator] Memory processing failed:", error);
+    });
+  }
+
+  async runSession(params: {
+    chatId: string;
+    streamId: string;
+    participants: string[];
+    mentionTarget: string | null;
+    messages: ChatMessage[];
+    tracer?: LangChainTracer;
+  }): Promise<void> {
+    this.ensureNotAborted();
+    if (this.legacyCompatibility) {
+      await this.runLegacySession(params);
+      return;
+    }
+    const { chatId, streamId, participants, mentionTarget, messages, tracer } = params;
+    const roomConfig = {
+      ...createDefaultGroupChatRoomConfig(participants.length),
+      ...this.roomConfig,
+      maxMessages: this.roomConfig.maxMessages || Math.max(1, participants.length),
+    };
+    let roomState = createDefaultGroupChatRoomState(roomConfig);
+    let sharedHistory = [...messages];
+    let generatedCount = 0;
+    let round = 1;
+    let idleStreak = 0;
+    let finishReason = "本轮已结束";
+
+    participants.forEach((participant) => this.getOrCreateAgent(participant));
+
+    while (generatedCount < roomConfig.maxMessages && round <= roomConfig.maxRounds) {
+      this.ensureNotAborted();
+      const targetRoleId = mentionTarget ?? roomConfig.targetRoleId ?? null;
+      const plannedSpeakers = this.planRound({
+        participants,
+        targetRoleId,
+        round,
+        sharedHistory,
+      });
+      const roundSpeakers: string[] = [];
+      const roundSkipped: string[] = [];
+      const roundFailed: string[] = [];
+      const skippedRoles: Array<{ roleId: string; reason: GroupChatSkipReason }> = [];
+      const roundStartedAt = Date.now();
+      let nominatedNextSpeaker: string | undefined;
+
+      this.deps.sseService.publish({
+        type: "round_started",
+        streamId,
+        round,
+        mode: roomConfig.mode,
+        targetRoleId,
+      });
+      this.deps.sseService.publish({
+        type: "round_plan",
+        streamId,
+        round,
+        plannedSpeakers,
+        mode: roomConfig.mode,
+        targetRoleId,
+      });
+      roomState = {
+        ...roomState,
+        currentRound: round,
+        currentTurn: 0,
+        plannedSpeakers,
+        lastTargetRoleId: targetRoleId,
+      };
+      this.publishRoomState(chatId, roomState);
+
+      for (let index = 0; index < plannedSpeakers.length; index += 1) {
+        this.ensureNotAborted();
+        if (generatedCount >= roomConfig.maxMessages) {
+          finishReason = "达到本房间消息上限";
+          break;
+        }
+        const speaker = plannedSpeakers[index];
+        if (this.breathingDelayMs > 0) {
+          await new Promise((resolve) => setTimeout(resolve, this.breathingDelayMs));
+        }
+
+        const generationReason: GroupChatGenerationReason =
+          targetRoleId && speaker === targetRoleId
+            ? "mentioned"
+            : roomConfig.mode === "host_mode" && speaker === roomConfig.hostRoleId
+              ? "host_prompted"
+              : nominatedNextSpeaker && speaker === nominatedNextSpeaker
+                ? "nominated"
+                : "scheduled";
+
+        try {
+          const previousSameRole = this.findPreviousAssistantMessage(sharedHistory, speaker);
+          let result = await this.runAgentTurn({
+            roleId: speaker,
+            participants,
+            sharedHistory,
+            chatId,
+            streamId,
+            targetRoleId,
+            round,
+            turnIndex: index + 1,
+            tracer,
+            generationReason,
+          });
+
+          let updatedHistory = result.messages;
+          let latestMessage = updatedHistory.at(-1);
+
+          if (!result.skip && latestMessage?.role === "assistant" && latestMessage.roleId === speaker) {
+            if (isSimilarToPrevious(previousSameRole?.content, latestMessage.content)) {
+              this.deps.repository.deleteMessage(latestMessage.id);
+              updatedHistory = sharedHistory;
+              result = await this.runAgentTurn({
+                roleId: speaker,
+                participants,
+                sharedHistory,
+                chatId,
+                streamId,
+                targetRoleId,
+                round,
+                turnIndex: index + 1,
+                tracer,
+                generationReason: "retry_rewrite",
+                antiRepeatInstruction: "不要重复你刚刚说过的内容，请补充新信息或换一个角度回应。",
+              });
+              updatedHistory = result.messages;
+              latestMessage = updatedHistory.at(-1);
+            }
+          }
+
+          if (!result.skip && latestMessage?.role === "assistant" && latestMessage.roleId === speaker) {
+            if (isSimilarToPrevious(previousSameRole?.content, latestMessage.content)) {
+              this.deps.repository.deleteMessage(latestMessage.id);
+              result = {
+                messages: sharedHistory,
+                skip: true,
+                skipReason: "similar_to_last",
+                nextSpeaker: undefined,
+              };
+              this.publishRoleSkipped(
+                streamId,
+                speaker,
+                round,
+                "similar_to_last",
+                `${speaker} 没有新的信息可补充，本轮保持沉默。`,
+              );
+            }
+          }
+
+          if (result.skip) {
+            const reason = result.skipReason ?? "no_new_value";
+            roundSkipped.push(speaker);
+            skippedRoles.push({ roleId: speaker, reason });
+            if (reason !== "similar_to_last") {
+              this.publishRoleSkipped(
+                streamId,
+                speaker,
+                round,
+                reason,
+                `${speaker} 选择保持沉默。`,
+              );
+            }
+          } else {
+            sharedHistory = result.messages;
+            generatedCount += 1;
+            roundSpeakers.push(speaker);
+          }
+
+          if (roomConfig.mode === "free_chat" && result.nextSpeaker && participants.includes(result.nextSpeaker)) {
+            nominatedNextSpeaker = result.nextSpeaker;
+          }
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "未知错误";
+          roundFailed.push(speaker);
+          this.deps.sseService.publish({
+            type: "error",
+            streamId,
+            roleId: speaker,
+            message: `角色 ${speaker} 发言失败：${message}`,
+          });
+        }
+      }
+
+      this.deps.sseService.publish({
+        type: "round_stats",
+        streamId,
+        round,
+        generatedCount: roundSpeakers.length,
+        speakers: roundSpeakers,
+        skipped: roundSkipped,
+        failed: roundFailed,
+        durationMs: Math.max(0, Date.now() - roundStartedAt),
+      });
+
+      roomState = {
+        ...roomState,
+        currentTurn: plannedSpeakers.length,
+        lastSpeakers: roundSpeakers,
+        skippedRoles,
+        lastFinishedReason: finishReason,
+      };
+      this.publishRoomState(chatId, roomState);
+
+      if (roomConfig.mode === "single_round") {
+        finishReason = targetRoleId ? "仅定向角色回复" : "本轮已结束";
+        break;
+      }
+      if (roundSpeakers.length === 0) {
+        idleStreak += 1;
+        if (idleStreak >= this.idleStreakThreshold) {
+          finishReason = "其余角色没有新内容";
+          break;
+        }
+      } else {
+        idleStreak = 0;
+      }
+      if (generatedCount >= roomConfig.maxMessages) {
+        finishReason = "达到本房间消息上限";
+        break;
+      }
+      if (round >= roomConfig.maxRounds) {
+        finishReason = roomConfig.mode === "host_mode" ? "主持人已收尾" : "达到本轮上限";
+        break;
+      }
+      round += 1;
+    }
+
+    roomState = {
+      ...roomState,
+      lastFinishedReason: finishReason,
+      currentRound: round,
+      lastTargetRoleId: mentionTarget ?? roomConfig.targetRoleId ?? null,
+    };
+    this.publishRoomState(chatId, roomState);
+    this.publishRoomFinished(streamId, round, generatedCount, finishReason);
+
     const memoryJob = this.processMemories(chatId, participants, sharedHistory);
     this.deps.trackAsyncJob?.(memoryJob);
     memoryJob.catch((error) => {

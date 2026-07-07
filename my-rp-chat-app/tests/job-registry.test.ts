@@ -35,4 +35,21 @@ describe("JobRegistry", () => {
 
     expect(registry.listJobs().map((job) => job.id)).toEqual([newer.id, older.id]);
   });
+
+  it("records duration and failure reason when a job fails", () => {
+    const registry = new JobRegistry();
+    const job = registry.createJob({ type: "chat", chatId: "chat-3" });
+
+    registry.updateJob(job.id, "running", {
+      startedAt: 1_000,
+    });
+    registry.updateJob(job.id, "failed", {
+      finishedAt: 1_450,
+      error: "LLM 调用失败",
+    });
+
+    const failedJob = registry.getJob(job.id);
+    expect(failedJob.error).toBe("LLM 调用失败");
+    expect(failedJob.durationMs).toBe(450);
+  });
 });

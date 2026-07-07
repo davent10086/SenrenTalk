@@ -1,9 +1,14 @@
-﻿﻿import express from "express";
+import express from "express";
 import multer from "multer";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { ApiService } from "./api-service";
-import type { ChatMode, PendingAttachmentInput } from "../common/types";
+import type {
+  ChatMode,
+  CreateChatRequest,
+  PendingAttachmentInput,
+  UpdateGroupChatRoomRequest,
+} from "../common/types";
 import { createCorsMiddleware } from "./middleware/cors";
 import {
   createRateLimiter,
@@ -181,8 +186,19 @@ async function main(): Promise<void> {
   });
 
   app.post("/api/chats", (request, response) => {
-    const body = request.body as { mode?: ChatMode; participants?: string[]; title?: string };
-    const chat = api.createChat(body.mode ?? "single", body.participants ?? [], body.title);
+    const body = request.body as CreateChatRequest;
+    const chat = api.createChat(
+      body.mode ?? "single",
+      body.participants ?? [],
+      body.title,
+      body.roomConfig,
+    );
+    response.json(chat);
+  });
+
+  app.patch("/api/chats/:chatId/room", (request, response) => {
+    const body = request.body as UpdateGroupChatRoomRequest;
+    const chat = api.updateGroupChatRoom(readParam(request.params.chatId), body);
     response.json(chat);
   });
 
@@ -198,6 +214,11 @@ async function main(): Promise<void> {
 
   app.get("/api/jobs", (_request, response) => {
     response.json(api.listJobs());
+  });
+
+  app.post("/api/jobs/:jobId/cancel", async (request, response) => {
+    const job = await api.cancelJob(readParam(request.params.jobId));
+    response.json(job);
   });
 
   app.post("/api/jobs/dialogue-index", async (_request, response) => {
@@ -216,6 +237,15 @@ async function main(): Promise<void> {
   app.post("/api/messages/:messageId/tts-regenerate", async (request, response) => {
     const message = await api.regenerateMessageAudio(readParam(request.params.messageId));
     response.json(message);
+  });
+
+  app.post("/api/messages/:messageId/edit-and-regenerate", async (request, response) => {
+    const body = request.body as { content?: string };
+    const result = await api.editMessageAndRegenerate(
+      readParam(request.params.messageId),
+      typeof body.content === "string" ? body.content : "",
+    );
+    response.json(result);
   });
 
   // ── 文件上传路由 ─────────────────────
@@ -258,6 +288,10 @@ async function main(): Promise<void> {
           mentionTarget:
             typeof request.body.mentionTarget === "string"
               ? request.body.mentionTarget
+              : null,
+          targetRoleId:
+            typeof request.body.targetRoleId === "string"
+              ? request.body.targetRoleId
               : null,
           attachments,
         });
@@ -320,4 +354,3 @@ void main().catch((error) => {
   console.error(error);
   process.exit(1);
 });
-

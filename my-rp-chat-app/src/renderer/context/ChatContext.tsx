@@ -1,5 +1,14 @@
+/* eslint-disable react-refresh/only-export-components */
 import { createContext, useContext, useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
-import type { BackendJob, ChatMessage, ChatMessageMetadata } from "../../common/types";
+import type {
+  BackendJob,
+  ChatMessage,
+  ChatMessageMetadata,
+  GroupChatRoomConfig,
+  GroupChatRoomMode,
+  GroupChatSkipReason,
+  GroupChatRoomState,
+} from "../../common/types";
 import * as apiClient from "../api/client";
 import { useChatStream } from "../hooks/useChatStream";
 import { useViewContext } from "./ViewContext";
@@ -13,7 +22,19 @@ interface ChatContextValue {
   activeRoleId: string | null;
   isStreaming: boolean;
   streamError: string | null;
+  streamNotice: string | null;
+  currentRound: number;
+  plannedSpeakers: string[];
+  skippedRoles: Array<{ roleId: string; reason: GroupChatSkipReason; message: string }>;
+  finishedReason: string | null;
+  roomMode: GroupChatRoomMode | null;
+  targetRoleId: string | null;
   sendMessage: (content: string, mentionTarget?: string | null, attachments?: PendingAttachmentDraft[]) => Promise<void>;
+  updateGroupChatRoom: (
+    updates: { roomConfig?: Partial<GroupChatRoomConfig>; roomState?: Partial<GroupChatRoomState> },
+  ) => Promise<void>;
+  editMessageAndRegenerate: (messageId: string, content: string) => Promise<void>;
+  stopGeneration: () => Promise<void>;
   refreshMessages: () => Promise<void>;
   clearChat: () => Promise<void>;
   deleteChat: () => Promise<void>;
@@ -26,7 +47,7 @@ interface ChatContextValue {
 const ChatContext = createContext<ChatContextValue | null>(null);
 
 export function ChatProvider({ children }: { children: ReactNode }) {
-  const { activeChatId, activeChat, deleteChat: removeChat } = useViewContext();
+  const { activeChatId, activeChat, deleteChat: removeChat, updateGroupChatRoom: updateViewRoom, refreshChats } = useViewContext();
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [jobs, setJobs] = useState<BackendJob[]>([]);
 
@@ -39,7 +60,24 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     setJobs(await apiClient.listJobs());
   }, []);
 
-  const { drafts, agentStatus, activeRoleId, isStreaming, error: streamError, sendMessage: streamSend, resetStream } =
+  const {
+    drafts,
+    agentStatus,
+    activeRoleId,
+    isStreaming,
+    error: streamError,
+    notice: streamNotice,
+    currentRound,
+    plannedSpeakers,
+    skippedRoles,
+    finishedReason,
+    roomMode,
+    targetRoleId,
+    sendMessage: streamSend,
+    runStreamRequest,
+    stopStream,
+    resetStream,
+  } =
     useChatStream({ onMessagesChanged: async () => { await refreshMessages(); } });
 
   useEffect(() => { void refreshMessages(); }, [refreshMessages]);
@@ -76,26 +114,59 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       mode: activeChat.mode,
       participants: activeChat.participants,
       mentionTarget: mentionTarget ?? null,
+      targetRoleId: mentionTarget ?? activeChat.roomConfig?.targetRoleId ?? null,
       attachments,
     });
   }, [activeChat, streamSend]);
 
+  const updateGroupChatRoom = useCallback(async (
+    updates: { roomConfig?: Partial<GroupChatRoomConfig>; roomState?: Partial<GroupChatRoomState> },
+  ) => {
+    await updateViewRoom(updates);
+    await refreshChats();
+  }, [refreshChats, updateViewRoom]);
+
+  const editMessageAndRegenerate = useCallback(async (messageId: string, content: string) => {
+    if (!activeChat || isStreaming) return;
+    const normalizedContent = content.trim();
+    if (!normalizedContent) return;
+
+    setMessages((prev) => {
+      const targetIndex = prev.findIndex((message) => message.id === messageId);
+      if (targetIndex < 0) return prev;
+      return prev.slice(0, targetIndex + 1).map((message, index) =>
+        index === targetIndex ? { ...message, content: normalizedContent } : message
+      );
+    });
+
+    try {
+      await runStreamRequest(() => apiClient.editMessageAndRegenerate(messageId, normalizedContent));
+    } catch {
+      await refreshMessages();
+      throw new Error("编辑后重生成失败");
+    }
+  }, [activeChat, isStreaming, refreshMessages, runStreamRequest]);
+
+  const stopGeneration = useCallback(async () => {
+    await stopStream();
+  }, [stopStream]);
+
   const clearChat = useCallback(async () => {
     if (!activeChatId) return;
     if (!window.confirm("确定要清空当前会话的聊天记录吗？这也会清空该会话相关的记忆。")) return;
-    resetStream();
+    await stopStream();
     await apiClient.clearMessages(activeChatId);
     await refreshMessages();
-  }, [activeChatId, refreshMessages, resetStream]);
+  }, [activeChatId, refreshMessages, stopStream]);
 
   const deleteChat = useCallback(async () => {
     if (!activeChatId) return;
     if (!window.confirm("确定要删除当前会话吗？这将永久删除该会话的所有聊天记录和记忆，且无法恢复。")) return;
-    resetStream();
+    await stopStream();
     // ViewContext.deleteChat 负责 API 调用、导航和会话列表刷新
     // ChatContext 不再重复调用 apiClient.deleteChat，避免同一会话被删除两次
     await removeChat(activeChatId);
-  }, [activeChatId, resetStream, removeChat]);
+  }, [activeChatId, stopStream, removeChat]);
 
   const retryAudio = useCallback(async (messageId: string) => {
     await apiClient.regenerateMessageAudio(messageId);
@@ -109,9 +180,14 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo<ChatContextValue>(() => ({
     messages, jobs, drafts, agentStatus, activeRoleId, isStreaming, streamError,
-    sendMessage, refreshMessages, clearChat, deleteChat, retryAudio, rebuildIndex, refreshJobs, resetStream,
-  }), [messages, jobs, drafts, agentStatus, activeRoleId, isStreaming, streamError,
-      sendMessage, refreshMessages, clearChat, deleteChat, retryAudio, rebuildIndex, refreshJobs, resetStream]);
+    streamNotice, currentRound, plannedSpeakers, skippedRoles, finishedReason, roomMode, targetRoleId,
+    updateGroupChatRoom,
+    sendMessage, editMessageAndRegenerate, stopGeneration,
+    refreshMessages, clearChat, deleteChat, retryAudio, rebuildIndex, refreshJobs, resetStream,
+  }), [messages, jobs, drafts, agentStatus, activeRoleId, isStreaming, streamError, streamNotice,
+      currentRound, plannedSpeakers, skippedRoles, finishedReason, roomMode, targetRoleId, updateGroupChatRoom,
+      sendMessage, editMessageAndRegenerate, stopGeneration,
+      refreshMessages, clearChat, deleteChat, retryAudio, rebuildIndex, refreshJobs, resetStream]);
 
   return <ChatContext.Provider value={value}>{children}</ChatContext.Provider>;
 }

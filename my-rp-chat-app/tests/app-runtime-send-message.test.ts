@@ -1,5 +1,4 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AppRuntime } from "../src/backend/app-runtime";
@@ -91,12 +90,15 @@ async function createRuntimeWithMocks(options: {
   const llmSpeechTextJa = options.llmSpeechTextJa ?? "テストキャラクターです。";
   const llmMock = vi
     .fn<(request: StructuredCompletionRequest) => Promise<StructuredCompletionResult>>()
-    .mockImplementation(async ({ onToken }) => {
-      await onToken(llmResponse);
+    .mockImplementation(async ({ systemPrompt, onToken }) => {
+      const selfAddressMatch = systemPrompt.match(/必须自称：(.+)/);
+      const selfAddress = selfAddressMatch ? selfAddressMatch[1].trim() : "我";
+      const normalizedContent = llmResponse.includes(selfAddress) ? llmResponse : `${selfAddress}${llmResponse}`;
+      await onToken(normalizedContent);
       return {
-        content: llmResponse,
+        content: normalizedContent,
         speechTextJa: llmSpeechTextJa,
-        raw: `<response><content>${llmResponse}</content><speechTextJa>${llmSpeechTextJa}</speechTextJa></response>`,
+        raw: `<response><content>${normalizedContent}</content><speechTextJa>${llmSpeechTextJa}</speechTextJa></response>`,
       };
     });
 
@@ -252,7 +254,47 @@ describe("AppRuntime.sendMessage", () => {
     const updatedMessages = repository.listMessages(chat.id);
     const assistantMessage = updatedMessages.find((m) => m.role === "assistant");
     expect(assistantMessage).toBeDefined();
-    expect(assistantMessage?.content).toBe("你好呀！");
+    expect(assistantMessage?.content).toBe("我你好呀！");
+
+    await runtime.dispose();
+  });
+
+  it("edits a user message, truncates later history, and regenerates the assistant reply", async () => {
+    const { runtime, repository } = await createRuntimeWithMocks({
+      characters: [createCharacter("芳乃")],
+      llmResponse: "这是编辑后的新回复",
+    });
+    const chat = runtime.createChat("single", ["芳乃"], "测试单聊");
+    const user1 = repository.appendMessage({
+      chatId: chat.id,
+      role: "user",
+      content: "旧问题",
+    });
+    repository.appendMessage({
+      chatId: chat.id,
+      role: "assistant",
+      roleId: "芳乃",
+      content: "旧回复",
+    });
+    repository.appendMessage({
+      chatId: chat.id,
+      role: "user",
+      content: "后续问题",
+    });
+
+    const result = await runtime.editMessageAndRegenerate(user1.id, "新的问题", {
+      jobId: "job-edit",
+    });
+    expect(result.jobId).toBe("job-edit");
+
+    await flushMicrotasks();
+
+    const messages = repository.listMessages(chat.id);
+    expect(messages).toHaveLength(2);
+    expect(messages[0].role).toBe("user");
+    expect(messages[0].content).toBe("新的问题");
+    expect(messages[1].role).toBe("assistant");
+    expect(messages[1].content).toBe("我这是编辑后的新回复");
 
     await runtime.dispose();
   });
@@ -368,6 +410,55 @@ describe("AppRuntime.sendMessage", () => {
     // 错误时触发 onJobFailed，不触发 onJobCompleted
     expect(onJobFailed).toHaveBeenCalledWith("job-test-fail", "LLM 服务不可用");
     expect(onJobCompleted).not.toHaveBeenCalled();
+
+    await runtime.dispose();
+  });
+
+  it("does not persist assistant message when generation is aborted", async () => {
+    const { runtime, repository } = await createRuntimeWithMocks({
+      characters: [createCharacter("芳乃")],
+    });
+    const chat = runtime.createChat("single", ["芳乃"], "测试中断");
+    const controller = new AbortController();
+    const onJobCancelled = vi.fn();
+
+    Object.assign(runtime.llmService, {
+      streamStructuredCompletion: vi.fn().mockImplementation(async ({ signal }: StructuredCompletionRequest) => {
+        await new Promise((_resolve, reject) => {
+          signal?.addEventListener("abort", () => {
+            const error = new Error("消息生成已中断");
+            error.name = "AbortError";
+            reject(error);
+          }, { once: true });
+        });
+        return {
+          content: "",
+          speechTextJa: "",
+          raw: "{}",
+        };
+      }),
+    });
+
+    await runtime.sendMessage(
+      {
+        chatId: chat.id,
+        content: "请开始生成",
+        mode: "single",
+        participants: ["芳乃"],
+      },
+      {
+        jobId: "job-abort",
+        signal: controller.signal,
+        onJobCancelled,
+      },
+    );
+
+    controller.abort();
+    await flushMicrotasks(300);
+
+    const messages = repository.listMessages(chat.id);
+    expect(messages.filter((message) => message.role === "assistant")).toHaveLength(0);
+    expect(onJobCancelled).toHaveBeenCalledWith("job-abort");
 
     await runtime.dispose();
   });

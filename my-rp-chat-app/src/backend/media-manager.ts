@@ -75,4 +75,17 @@ export class MediaManager {
       }),
     );
   }
+
+  async cleanupRelativePaths(relativePaths: string[]): Promise<void> {
+    const uniquePaths = [...new Set(relativePaths.filter(Boolean))];
+    await Promise.all(
+      uniquePaths.map(async (relativePath) => {
+        try {
+          await fs.rm(path.join(this.config.mediaDir, relativePath), { force: true });
+        } catch (error) {
+          console.warn(`[MediaManager] 清理媒体文件失败 ${relativePath}:`, error);
+        }
+      }),
+    );
+  }
 }

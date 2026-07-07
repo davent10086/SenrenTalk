@@ -16,6 +16,7 @@ export interface CompletionRequest {
   systemPrompt: string;
   userPrompt: string;
   onToken: (token: string) => Promise<void> | void;
+  signal?: AbortSignal;
 }
 
 /**
@@ -37,6 +38,11 @@ export interface StructuredCompletionResult {
   /** 群聊下 agent 可自愿跳过本次发言，此时 content/speechTextJa 为空。 */
   skip?: boolean;
   raw: string;
+}
+
+export interface ImageIdentityCandidate {
+  canonicalName: string;
+  identity: string;
 }
 
 /**
@@ -76,6 +82,15 @@ function buildUserMessageContent(
   ];
 }
 
+function throwIfAborted(signal?: AbortSignal): void {
+  if (!signal?.aborted) {
+    return;
+  }
+  const error = new Error("消息生成已中断");
+  error.name = "AbortError";
+  throw error;
+}
+
 /**
  * LLM 服务封装，提供流式补全、结构化输出、多模态图片理解及日语朗读稿生成等能力。
  */
@@ -103,18 +118,24 @@ export class LlmService {
       throw new Error("缺少 LLM_API_KEY，无法调用 LLM 流式接口。");
     }
 
-    const stream = await this.client.chat.completions.create({
-      model: this.config.llmModel,
-      stream: true,
-      temperature: 0.8,
-      messages: [
-        { role: "system", content: request.systemPrompt },
-        { role: "user", content: request.userPrompt },
-      ],
-    });
+    const stream = await this.client.chat.completions.create(
+      {
+        model: this.config.llmModel,
+        stream: true,
+        temperature: 0.8,
+        messages: [
+          { role: "system", content: request.systemPrompt },
+          { role: "user", content: request.userPrompt },
+        ],
+      },
+      {
+        signal: request.signal,
+      },
+    );
 
     let fullText = "";
     for await (const chunk of stream) {
+      throwIfAborted(request.signal);
       const token = chunk.choices[0]?.delta?.content ?? "";
       if (!token) {
         continue;
@@ -143,41 +164,48 @@ export class LlmService {
     const hasImages = !!request.images && request.images.length > 0;
     // 双模型切换：有图片时用视觉模型，无图片时用纯文本模型
     const model = hasImages ? this.config.llmVisionModel : this.config.llmModel;
-
-    const stream = await this.client.chat.completions.create({
-      model,
-      stream: true,
-      temperature: 0.7,
-      messages: [
-        {
-          role: "system",
-          content: [
-            request.systemPrompt,
-            "你必须严格输出单个 JSON 对象，不能输出任何额外解释、前后缀、代码块或 Markdown。",
-            "基础格式：",
-            "{\"content\":\"中文回复\",\"speechTextJa\":\"日语朗读稿\"}",
-            "可选字段（仅在群聊场景下使用）：",
-            "- nextSpeaker: 字符串，指定下一位发言的角色名（不要加引号外的额外说明）。",
-            "- skip: 布尔值，true 表示本轮自愿不发言（此时 content 和 speechTextJa 可为空字符串）。",
-            "要求：",
-            "1. content 使用自然中文，适合界面展示。",
-            "2. speechTextJa 使用自然日语口语，适合 TTS 朗读。",
-            "3. 两个字段必须语义一致，保持同一角色口吻。",
-            "4. JSON 的第一个键必须是 content，并尽快开始输出 content 的正文。",
-            "5. 单聊场景下不要输出 nextSpeaker 和 skip 字段。",
-            hasImages
-              ? "用户发送了图片，请结合图片内容进行回复。"
-              : "",
-          ].join("\n\n"),
-        },
-        { role: "user", content: buildUserMessageContent(request.userPrompt, request.images) },
-      ],
-    });
+    const stream = await this.client.chat.completions.create(
+      {
+        model,
+        stream: true,
+        temperature: 0.7,
+        messages: [
+          {
+            role: "system",
+            content: [
+              request.systemPrompt,
+              "你必须严格输出单个 JSON 对象，不能输出任何额外解释、前后缀、代码块或 Markdown。",
+              "基础格式：",
+              "{\"content\":\"中文回复\",\"speechTextJa\":\"日语朗读稿\"}",
+              "可选字段（仅在群聊场景下使用）：",
+              "- nextSpeaker: 字符串，指定下一位发言的角色名（不要加引号外的额外说明）。",
+              "- skip: 布尔值，true 表示本轮自愿不发言（此时 content 和 speechTextJa 可为空字符串）。",
+              "要求：",
+              "1. content 使用自然中文，适合界面展示。",
+              "2. speechTextJa 使用自然日语口语，适合 TTS 朗读。",
+              "3. 两个字段必须语义一致，保持同一角色口吻。",
+              "4. JSON 的第一个键必须是 content，并尽快开始输出 content 的正文。",
+              "5. 单聊场景下不要输出 nextSpeaker 和 skip 字段。",
+              hasImages
+                ? [
+                  "用户发送了图片，请结合图片内容进行回复。",
+                ].join("\n")
+                : "",
+            ].join("\n\n"),
+          },
+          { role: "user", content: buildUserMessageContent(request.userPrompt, request.images) },
+        ],
+      },
+      {
+        signal: request.signal,
+      },
+    );
 
     let raw = "";
     let streamedContent = "";
 
     for await (const chunk of stream) {
+      throwIfAborted(request.signal);
       const token = chunk.choices[0]?.delta?.content ?? "";
       if (!token) {
         continue;
@@ -243,6 +271,43 @@ export class LlmService {
    * @param input - 包含角色名、用户输入和助手输出。
    * @returns 解析后的记忆数据。
    */
+  async identifyImageCharacter(request: {
+    candidates: ImageIdentityCandidate[];
+    images: ImageInput[];
+    currentRoleName?: string;
+    signal?: AbortSignal;
+  }): Promise<string | undefined> {
+    if (!this.config.llmApiKey || request.images.length === 0 || request.candidates.length === 0) {
+      return undefined;
+    }
+
+    const result = await this.streamStructuredCompletion({
+      systemPrompt: [
+        "你是一个中立的图片人物识别助手，不进行角色扮演。",
+        "请先独立观察图片本身，不要急着根据候选列表做联想。",
+        "如果你能直接识别出图片中的具体角色，请在 content 中只输出角色标准名，不要加解释。",
+        "如果无法直接识别，再参考候选列表，从中选择最像的一位。",
+        "如果仍然无法判断，请在 content 中只输出“未知”。",
+        "speechTextJa 用简短日语表达同样结论即可。",
+      ].join("\n"),
+      userPrompt: [
+        "请忽略任何角色扮演包袱，只做中立识别。",
+        "先看图，先独立识别，再把候选列表当作兜底参考。",
+        "候选角色（仅在无法直接识别时再参考）：",
+        ...request.candidates.map((candidate) => `- ${candidate.canonicalName}：${candidate.identity}`),
+        "不要因为任一候选与当前对话角色同名，就偏向她或排除她；只根据图片本身判断。",
+      ]
+        .filter(Boolean)
+        .join("\n"),
+      images: request.images,
+      signal: request.signal,
+      onToken: () => {},
+    });
+
+    const normalized = result.content.trim();
+    return normalized.length > 0 ? normalized : undefined;
+  }
+
   async extractEpisodicMemory(input: { characterName: string; userInput: string; assistantOutput: string }): Promise<{ summary: string; emotion: string; importance: number; keyPoints: string[] }> {
     const response = await this.client.chat.completions.create({
       model: this.config.llmModel,

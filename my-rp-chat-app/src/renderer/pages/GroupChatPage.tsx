@@ -1,10 +1,34 @@
-﻿﻿import { useViewContext } from "../context/ViewContext";
-import { useChatContext } from "../context/ChatContext";
 import { ChatWorkspace } from "../components/ChatWorkspace";
+import { useChatContext } from "../context/ChatContext";
+import { useViewContext } from "../context/ViewContext";
 
 export function GroupChatPage() {
-  const { activeChat, mentionTarget, setMentionTarget } = useViewContext();
-  const { messages, drafts, agentStatus, activeRoleId, isStreaming, streamError, sendMessage, refreshMessages, retryAudio, clearChat, deleteChat } = useChatContext();
+  const { activeChat, updateGroupChatRoom } = useViewContext();
+  const {
+    messages,
+    drafts,
+    agentStatus,
+    activeRoleId,
+    isStreaming,
+    streamError,
+    streamNotice,
+    currentRound,
+    plannedSpeakers,
+    skippedRoles,
+    finishedReason,
+    roomMode,
+    targetRoleId,
+    sendMessage,
+    updateGroupChatRoom: updateRoomFromChat,
+    editMessageAndRegenerate,
+    stopGeneration,
+    refreshMessages,
+    retryAudio,
+    clearChat,
+    deleteChat,
+  } = useChatContext();
+
+  const effectiveTarget = targetRoleId ?? activeChat?.roomConfig?.targetRoleId ?? null;
 
   return (
     <ChatWorkspace
@@ -16,23 +40,61 @@ export function GroupChatPage() {
       activeRoleId={activeRoleId}
       isStreaming={isStreaming}
       error={streamError}
-      mentionTarget={mentionTarget}
+      notice={streamNotice}
+      mentionTarget={effectiveTarget}
+      currentRound={currentRound}
+      plannedSpeakers={plannedSpeakers}
+      skippedRoles={skippedRoles}
+      finishedReason={finishedReason}
+      roomMode={roomMode}
       onSend={sendMessage}
+      onUpdateRoom={updateRoomFromChat}
       onRefreshMessages={refreshMessages}
       onRetryAudio={retryAudio}
+      onEditAndRegenerate={editMessageAndRegenerate}
+      onStopGeneration={stopGeneration}
       onClear={clearChat}
       onDelete={deleteChat}
       headerExtra={
-        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-          <span className="muted" style={{ fontSize: "0.85rem" }}>定向发言</span>
+        <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
           <select
-            value={mentionTarget ?? ""}
-            onChange={(e) => setMentionTarget(e.target.value || null)}
-            style={{ padding: "4px 8px", fontSize: "0.85rem", borderRadius: "6px", background: "var(--theme-surface)", border: "1px solid var(--theme-border)", color: "var(--theme-text)" }}
+            value={activeChat?.roomConfig?.mode ?? "single_round"}
+            onChange={(event) => void updateGroupChatRoom({
+              roomConfig: { mode: event.target.value as "single_round" | "free_chat" | "host_mode" },
+            })}
+            style={{
+              padding: "4px 8px",
+              fontSize: "0.85rem",
+              borderRadius: "6px",
+              background: "var(--theme-surface)",
+              border: "1px solid var(--theme-border)",
+              color: "var(--theme-text)",
+            }}
           >
-            <option value="">轮流发言</option>
-            {activeChat?.participants.map((p) => (
-              <option key={p} value={p}>@{p}</option>
+            <option value="single_round">一轮回应</option>
+            <option value="free_chat">自由群聊</option>
+            <option value="host_mode">主持模式</option>
+          </select>
+          <select
+            value={effectiveTarget ?? ""}
+            onChange={(event) => void updateGroupChatRoom({
+              roomConfig: { targetRoleId: event.target.value || null },
+              roomState: { lastTargetRoleId: event.target.value || null },
+            })}
+            style={{
+              padding: "4px 8px",
+              fontSize: "0.85rem",
+              borderRadius: "6px",
+              background: "var(--theme-surface)",
+              border: "1px solid var(--theme-border)",
+              color: "var(--theme-text)",
+            }}
+          >
+            <option value="">让大家都说一句</option>
+            {activeChat?.participants.map((participant) => (
+              <option key={participant} value={participant}>
+                只让 @{participant} 回复
+              </option>
             ))}
           </select>
         </div>

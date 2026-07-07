@@ -2,12 +2,19 @@ import fs from "node:fs";
 import path from "node:path";
 import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
+import { initDatabaseSchema } from "./schema";
+import {
+  createDefaultGroupChatRoomConfig,
+  createDefaultGroupChatRoomState,
+} from "../../common/types";
 import type {
   CharacterProfile,
   ChatMessage,
   ChatMessageMetadata,
   ChatMode,
   ChatRecord,
+  GroupChatRoomConfig,
+  GroupChatRoomState,
   MemoryEvent,
   MessageAudio,
 } from "../../common/types";
@@ -21,6 +28,47 @@ function parseJson<T>(value: string | null | undefined, fallback: T): T {
   } catch {
     return fallback;
   }
+}
+
+function normalizeRoomConfig(
+  mode: ChatMode,
+  participants: string[],
+  roomConfig: Partial<GroupChatRoomConfig> | undefined,
+  fallbackTargetRoleId?: string | null,
+): GroupChatRoomConfig | undefined {
+  if (mode !== "group") {
+    return undefined;
+  }
+
+  const defaults = createDefaultGroupChatRoomConfig(participants.length);
+  return {
+    ...defaults,
+    ...roomConfig,
+    targetRoleId: roomConfig?.targetRoleId ?? fallbackTargetRoleId ?? defaults.targetRoleId,
+    hostRoleId: roomConfig?.hostRoleId ?? defaults.hostRoleId,
+  };
+}
+
+function normalizeRoomState(
+  mode: ChatMode,
+  roomConfig: GroupChatRoomConfig | undefined,
+  roomState: Partial<GroupChatRoomState> | undefined,
+): GroupChatRoomState | undefined {
+  if (mode !== "group") {
+    return undefined;
+  }
+
+  const defaults = createDefaultGroupChatRoomState(roomConfig);
+  return {
+    ...defaults,
+    ...roomState,
+    plannedSpeakers: roomState?.plannedSpeakers ?? defaults.plannedSpeakers,
+    lastSpeakers: roomState?.lastSpeakers ?? defaults.lastSpeakers,
+    skippedRoles: roomState?.skippedRoles ?? defaults.skippedRoles,
+    consensus: roomState?.consensus ?? defaults.consensus,
+    unresolved: roomState?.unresolved ?? defaults.unresolved,
+    lastTargetRoleId: roomState?.lastTargetRoleId ?? roomConfig?.targetRoleId ?? defaults.lastTargetRoleId,
+  };
 }
 
 interface CharacterRow {
@@ -39,6 +87,8 @@ interface ChatRow {
   mode: ChatMode;
   participants_json: string;
   mention_target: string | null;
+  room_config_json: string | null;
+  room_state_json: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -112,145 +162,7 @@ export class ChatRepository {
    * core_memories、memory_summaries 等表（如果不存在则创建）。
    */
   init(): void {
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS characters (
-        id TEXT PRIMARY KEY,
-        name TEXT NOT NULL,
-        display_name TEXT NOT NULL,
-        is_playable INTEGER NOT NULL,
-        character_type TEXT NOT NULL,
-        summary TEXT NOT NULL,
-        prompt_profile_json TEXT NOT NULL
-      );
-
-      CREATE TABLE IF NOT EXISTS chats (
-        id TEXT PRIMARY KEY,
-        title TEXT NOT NULL,
-        mode TEXT NOT NULL,
-        participants_json TEXT NOT NULL,
-        mention_target TEXT,
-        created_at INTEGER NOT NULL,
-        updated_at INTEGER NOT NULL
-      );
-
-      CREATE TABLE IF NOT EXISTS messages (
-        id TEXT PRIMARY KEY,
-        chat_id TEXT NOT NULL,
-        role TEXT NOT NULL,
-        role_id TEXT,
-        content TEXT NOT NULL,
-        timestamp INTEGER NOT NULL,
-        metadata_json TEXT,
-        FOREIGN KEY(chat_id) REFERENCES chats(id)
-      );
-
-      CREATE TABLE IF NOT EXISTS memory_events (
-        id TEXT PRIMARY KEY,
-        chat_id TEXT NOT NULL,
-        session_id TEXT NOT NULL,
-        character TEXT NOT NULL,
-        content TEXT NOT NULL,
-        category TEXT NOT NULL,
-        timestamp INTEGER NOT NULL,
-        tags_json TEXT NOT NULL,
-        source_message_id TEXT,
-        FOREIGN KEY(chat_id) REFERENCES chats(id)
-      );
-
-      CREATE TABLE IF NOT EXISTS core_memories (
-        id TEXT PRIMARY KEY,
-        chat_id TEXT NOT NULL,
-        character_id TEXT NOT NULL,
-        user_preferences_json TEXT NOT NULL DEFAULT '[]',
-        user_traits_json TEXT NOT NULL DEFAULT '[]',
-        relationship_stage TEXT NOT NULL DEFAULT '',
-        relationship_notes_json TEXT NOT NULL DEFAULT '[]',
-        key_facts_json TEXT NOT NULL DEFAULT '[]',
-        last_updated INTEGER NOT NULL,
-        UNIQUE(chat_id, character_id),
-        FOREIGN KEY(chat_id) REFERENCES chats(id)
-      );
-
-      CREATE TABLE IF NOT EXISTS memory_summaries (
-        id TEXT PRIMARY KEY,
-        chat_id TEXT NOT NULL,
-        character_id TEXT NOT NULL DEFAULT '__chat__',
-        summary TEXT NOT NULL,
-        created_at INTEGER NOT NULL,
-        UNIQUE(chat_id, character_id)
-      );
-
-      -- Indexes for frequently queried columns
-      CREATE INDEX IF NOT EXISTS idx_messages_chat_id ON messages(chat_id);
-      CREATE INDEX IF NOT EXISTS idx_memory_events_chat_id_session ON memory_events(chat_id, session_id);
-      CREATE INDEX IF NOT EXISTS idx_memory_events_character ON memory_events(chat_id, character);
-      CREATE INDEX IF NOT EXISTS idx_core_memories_chat_id ON core_memories(chat_id);
-      CREATE INDEX IF NOT EXISTS idx_memory_summaries_chat_id ON memory_summaries(chat_id);
-    `);
-
-    // 迁移：为 memory_events 添加记忆提炼字段（SQLite 的 ADD COLUMN 对已有数据兼容，旧数据为 NULL）
-    this.ensureMemoryEventColumns();
-    // 迁移：为 memory_summaries 添加 character_id 列并将 UNIQUE 约束改为 (chat_id, character_id)
-    this.migrateMemorySummariesForCharacterIsolation();
-  }
-
-  /**
-   * 确保 memory_events 表包含记忆提炼所需的字段。
-   * 使用 ALTER TABLE ADD COLUMN 进行增量迁移，已有数据的新列值为 NULL。
-   */
-  private ensureMemoryEventColumns(): void {
-    const columns = this.db.prepare("PRAGMA table_info(memory_events)").all() as Array<{ name: string }>;
-    const existing = new Set(columns.map((c) => c.name));
-    const required: Array<{ name: string; def: string }> = [
-      { name: "summary", def: "TEXT" },
-      { name: "emotion", def: "TEXT" },
-      { name: "importance", def: "INTEGER" },
-      { name: "key_points_json", def: "TEXT" },
-    ];
-    for (const col of required) {
-      if (!existing.has(col.name)) {
-        this.db.exec(`ALTER TABLE memory_events ADD COLUMN ${col.name} ${col.def}`);
-      }
-    }
-  }
-
-  /**
-   * 迁移 memory_summaries 表以支持按 (chat_id, character_id) 隔离摘要。
-   *
-   * 旧 schema：UNIQUE(chat_id)，会话级摘要，群聊下多角色互相覆盖。
-   * 新 schema：UNIQUE(chat_id, character_id)，每个角色独立摘要。
-   *
-   * SQLite 不支持直接修改 UNIQUE 约束，需重建表：
-   * 1. 重命名旧表
-   * 2. 创建新表（新 schema）
-   * 3. 复制旧数据，character_id 填充为 CHAT_LEVEL_SUMMARY_KEY
-   * 4. 删除旧表
-   *
-   * 已迁移的表（含 character_id 列）直接跳过。
-   */
-  private migrateMemorySummariesForCharacterIsolation(): void {
-    const columns = this.db.prepare("PRAGMA table_info(memory_summaries)").all() as Array<{ name: string }>;
-    const existing = new Set(columns.map((c) => c.name));
-    if (existing.has("character_id")) {
-      return;
-    }
-
-    this.db.exec(`
-      ALTER TABLE memory_summaries RENAME TO memory_summaries_old;
-      CREATE TABLE memory_summaries (
-        id TEXT PRIMARY KEY,
-        chat_id TEXT NOT NULL,
-        character_id TEXT NOT NULL DEFAULT '${ChatRepository.CHAT_LEVEL_SUMMARY_KEY}',
-        summary TEXT NOT NULL,
-        created_at INTEGER NOT NULL,
-        UNIQUE(chat_id, character_id)
-      );
-      INSERT INTO memory_summaries (id, chat_id, character_id, summary, created_at)
-        SELECT id, chat_id, '${ChatRepository.CHAT_LEVEL_SUMMARY_KEY}', summary, created_at
-        FROM memory_summaries_old;
-      DROP TABLE memory_summaries_old;
-      CREATE INDEX IF NOT EXISTS idx_memory_summaries_chat_id ON memory_summaries(chat_id);
-    `);
+    initDatabaseSchema(this.db, ChatRepository.CHAT_LEVEL_SUMMARY_KEY);
   }
 
   /**
@@ -358,27 +270,38 @@ export class ChatRepository {
    * @param title - 可选的聊天标题，不提供时自动生成
    * @returns 新创建的聊天记录
    */
-  createChat(mode: ChatMode, participants: string[], title?: string): ChatRecord {
+  createChat(
+    mode: ChatMode,
+    participants: string[],
+    title?: string,
+    roomConfigPatch?: Partial<GroupChatRoomConfig>,
+  ): ChatRecord {
     const now = Date.now();
+    const roomConfig = normalizeRoomConfig(mode, participants, roomConfigPatch);
+    const roomState = normalizeRoomState(mode, roomConfig, undefined);
     const chat: ChatRecord = {
       id: randomUUID(),
       title: title ?? `${mode === "single" ? "单聊" : "群聊"} ${new Date(now).toLocaleString("zh-CN")}`,
       mode,
       participants,
-      mentionTarget: null,
+      mentionTarget: roomConfig?.targetRoleId ?? null,
+      roomConfig,
+      roomState,
       createdAt: now,
       updatedAt: now,
     };
 
     this.db.prepare(
-      `INSERT INTO chats (id, title, mode, participants_json, mention_target, created_at, updated_at)
-       VALUES (@id, @title, @mode, @participants_json, @mention_target, @created_at, @updated_at)`,
+      `INSERT INTO chats (id, title, mode, participants_json, mention_target, room_config_json, room_state_json, created_at, updated_at)
+       VALUES (@id, @title, @mode, @participants_json, @mention_target, @room_config_json, @room_state_json, @created_at, @updated_at)`,
     ).run({
       id: chat.id,
       title: chat.title,
       mode: chat.mode,
       participants_json: JSON.stringify(chat.participants),
       mention_target: chat.mentionTarget,
+      room_config_json: chat.roomConfig ? JSON.stringify(chat.roomConfig) : null,
+      room_state_json: chat.roomState ? JSON.stringify(chat.roomState) : null,
       created_at: chat.createdAt,
       updated_at: chat.updatedAt,
     });
@@ -392,15 +315,31 @@ export class ChatRepository {
    */
   listChats(): ChatRecord[] {
     const rows = this.db.prepare("SELECT * FROM chats ORDER BY updated_at DESC").all() as ChatRow[];
-    return rows.map((row) => ({
-      id: row.id,
-      title: row.title,
-      mode: row.mode,
-      participants: parseJson<string[]>(row.participants_json, []),
-      mentionTarget: row.mention_target,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-    }));
+    return rows.map((row) => {
+      const participants = parseJson<string[]>(row.participants_json, []);
+      const roomConfig = normalizeRoomConfig(
+        row.mode,
+        participants,
+        parseJson<Partial<GroupChatRoomConfig> | undefined>(row.room_config_json, undefined),
+        row.mention_target,
+      );
+      const roomState = normalizeRoomState(
+        row.mode,
+        roomConfig,
+        parseJson<Partial<GroupChatRoomState> | undefined>(row.room_state_json, undefined),
+      );
+      return {
+        id: row.id,
+        title: row.title,
+        mode: row.mode,
+        participants,
+        mentionTarget: roomConfig?.targetRoleId ?? row.mention_target,
+        roomConfig,
+        roomState,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+      };
+    });
   }
 
   /**
@@ -411,12 +350,26 @@ export class ChatRepository {
   getChat(chatId: string): ChatRecord | undefined {
     const row = this.db.prepare("SELECT * FROM chats WHERE id = ?").get(chatId) as ChatRow | undefined;
     if (!row) return undefined;
+    const participants = parseJson<string[]>(row.participants_json, []);
+    const roomConfig = normalizeRoomConfig(
+      row.mode,
+      participants,
+      parseJson<Partial<GroupChatRoomConfig> | undefined>(row.room_config_json, undefined),
+      row.mention_target,
+    );
+    const roomState = normalizeRoomState(
+      row.mode,
+      roomConfig,
+      parseJson<Partial<GroupChatRoomState> | undefined>(row.room_state_json, undefined),
+    );
     return {
       id: row.id,
       title: row.title,
       mode: row.mode,
-      participants: parseJson<string[]>(row.participants_json, []),
-      mentionTarget: row.mention_target,
+      participants,
+      mentionTarget: roomConfig?.targetRoleId ?? row.mention_target,
+      roomConfig,
+      roomState,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };
@@ -428,11 +381,64 @@ export class ChatRepository {
    * @param mentionTarget - 可选的提及目标角色 ID
    */
   touchChat(chatId: string, mentionTarget?: string | null): void {
-    this.db.prepare("UPDATE chats SET updated_at = @updated_at, mention_target = @mention_target WHERE id = @id").run({
+    const chat = this.getChat(chatId);
+    const nextMentionTarget = mentionTarget ?? chat?.roomConfig?.targetRoleId ?? null;
+    this.db.prepare(
+      "UPDATE chats SET updated_at = @updated_at, mention_target = @mention_target WHERE id = @id",
+    ).run({
       id: chatId,
       updated_at: Date.now(),
-      mention_target: mentionTarget ?? null,
+      mention_target: nextMentionTarget,
     });
+  }
+
+  updateChatRoomConfig(chatId: string, patch: Partial<GroupChatRoomConfig>): ChatRecord {
+    const chat = this.getChat(chatId);
+    if (!chat) {
+      throw new Error(`未找到会话 ${chatId}`);
+    }
+    const nextRoomConfig = normalizeRoomConfig(chat.mode, chat.participants, {
+      ...(chat.roomConfig ?? {}),
+      ...patch,
+    });
+    const nextRoomState = normalizeRoomState(chat.mode, nextRoomConfig, chat.roomState);
+    this.db.prepare(
+      `UPDATE chats
+       SET updated_at = @updated_at,
+           mention_target = @mention_target,
+           room_config_json = @room_config_json,
+           room_state_json = @room_state_json
+       WHERE id = @id`,
+    ).run({
+      id: chatId,
+      updated_at: Date.now(),
+      mention_target: nextRoomConfig?.targetRoleId ?? null,
+      room_config_json: nextRoomConfig ? JSON.stringify(nextRoomConfig) : null,
+      room_state_json: nextRoomState ? JSON.stringify(nextRoomState) : null,
+    });
+    return this.getChat(chatId)!;
+  }
+
+  updateChatRoomState(chatId: string, patch: Partial<GroupChatRoomState>): ChatRecord {
+    const chat = this.getChat(chatId);
+    if (!chat) {
+      throw new Error(`未找到会话 ${chatId}`);
+    }
+    const nextRoomState = normalizeRoomState(chat.mode, chat.roomConfig, {
+      ...(chat.roomState ?? {}),
+      ...patch,
+    });
+    this.db.prepare(
+      `UPDATE chats
+       SET updated_at = @updated_at,
+           room_state_json = @room_state_json
+       WHERE id = @id`,
+    ).run({
+      id: chatId,
+      updated_at: Date.now(),
+      room_state_json: nextRoomState ? JSON.stringify(nextRoomState) : null,
+    });
+    return this.getChat(chatId)!;
   }
 
   /**
@@ -468,6 +474,10 @@ export class ChatRepository {
     return message;
   }
 
+  deleteMessage(messageId: string): void {
+    this.db.prepare("DELETE FROM messages WHERE id = ?").run(messageId);
+  }
+
   /**
    * 根据消息 ID 获取单条消息。
    * @param messageId - 消息唯一标识
@@ -500,6 +510,18 @@ export class ChatRepository {
       id: messageId,
       metadata_json: JSON.stringify(metadata),
     });
+  }
+
+  updateMessageContent(messageId: string, content: string): void {
+    const current = this.getMessage(messageId);
+    if (!current) {
+      throw new Error(`未找到消息 ${messageId}`);
+    }
+    this.db.prepare("UPDATE messages SET content = @content WHERE id = @id").run({
+      id: messageId,
+      content,
+    });
+    this.touchChat(current.chatId);
   }
 
   /**
@@ -578,6 +600,28 @@ export class ChatRepository {
       this.db.prepare("DELETE FROM memory_events WHERE chat_id = ?").run(chatId);
       this.db.prepare("DELETE FROM memory_summaries WHERE chat_id = ?").run(chatId);
       this.db.prepare("DELETE FROM core_memories WHERE chat_id = ?").run(chatId);
+      this.touchChat(chatId);
+    })();
+  }
+
+  clearMemories(chatId: string): void {
+    this.db.transaction(() => {
+      this.db.prepare("DELETE FROM memory_events WHERE chat_id = ?").run(chatId);
+      this.db.prepare("DELETE FROM memory_summaries WHERE chat_id = ?").run(chatId);
+      this.db.prepare("DELETE FROM core_memories WHERE chat_id = ?").run(chatId);
+      this.touchChat(chatId);
+    })();
+  }
+
+  truncateMessagesAfter(chatId: string, messageId: string): void {
+    const target = this.db.prepare(
+      "SELECT rowid AS row_id FROM messages WHERE chat_id = ? AND id = ? LIMIT 1",
+    ).get(chatId, messageId) as { row_id: number } | undefined;
+    if (!target) {
+      throw new Error(`未找到消息 ${messageId}`);
+    }
+    this.db.transaction(() => {
+      this.db.prepare("DELETE FROM messages WHERE chat_id = ? AND rowid > ?").run(chatId, target.row_id);
       this.touchChat(chatId);
     })();
   }

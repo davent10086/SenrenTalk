@@ -1,5 +1,16 @@
 ﻿import { ApiService } from "../server/api-service";
-import type { BackendJob, BootstrapPayload, ChatMessage, ChatMode, ChatRecord, ChatRequest, ChatSendResult, PublicSettings } from "../common/types";
+import type {
+  BackendJob,
+  BootstrapPayload,
+  ChatMessage,
+  ChatMode,
+  ChatRecord,
+  ChatRequest,
+  ChatSendResult,
+  GroupChatRoomConfig,
+  GroupChatRoomState,
+  PublicSettings,
+} from "../common/types";
 
 /**
  * 工作线程运行时 — 作为 Electron Worker 的 API 入口。
@@ -50,8 +61,20 @@ export class WorkerRuntime {
     await this.api.clearMessages(chatId);
   }
 
-  createChat(mode: ChatMode, participants: string[], title?: string): ChatRecord {
-    return this.api.createChat(mode, participants, title);
+  createChat(
+    mode: ChatMode,
+    participants: string[],
+    title?: string,
+    roomConfig?: Partial<GroupChatRoomConfig>,
+  ): ChatRecord {
+    return this.api.createChat(mode, participants, title, roomConfig);
+  }
+
+  updateGroupChatRoom(
+    chatId: string,
+    updates: { roomConfig?: Partial<GroupChatRoomConfig>; roomState?: Partial<GroupChatRoomState> },
+  ): ChatRecord {
+    return this.api.updateGroupChatRoom(chatId, updates);
   }
 
   listJobs(): BackendJob[] {

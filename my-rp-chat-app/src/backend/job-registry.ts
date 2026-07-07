@@ -30,18 +30,25 @@ export class JobRegistry {
     extra: Partial<Omit<BackendJob, "id" | "type" | "createdAt" | "status">> = {},
   ): BackendJob {
     const current = this.getJob(jobId);
+    const startedAt =
+      status === "running"
+        ? extra.startedAt ?? current.startedAt ?? Date.now()
+        : extra.startedAt ?? current.startedAt;
+    const finishedAt =
+      status === "completed" || status === "failed" || status === "cancelled"
+        ? extra.finishedAt ?? Date.now()
+        : extra.finishedAt ?? current.finishedAt;
+    const durationMs =
+      finishedAt != null
+        ? Math.max(0, finishedAt - (startedAt ?? current.createdAt))
+        : extra.durationMs ?? current.durationMs;
     const next: BackendJob = {
       ...current,
       ...extra,
       status,
-      startedAt:
-        status === "running"
-          ? extra.startedAt ?? current.startedAt ?? Date.now()
-          : extra.startedAt ?? current.startedAt,
-      finishedAt:
-        status === "completed" || status === "failed"
-          ? extra.finishedAt ?? Date.now()
-          : extra.finishedAt ?? current.finishedAt,
+      startedAt,
+      finishedAt,
+      durationMs,
     };
     this.jobs.set(jobId, next);
     return next;

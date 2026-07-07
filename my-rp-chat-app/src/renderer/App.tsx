@@ -1,7 +1,7 @@
-﻿﻿﻿﻿﻿﻿﻿import { useMemo } from "react";
+﻿import { useMemo } from "react";
 import { Settings, Users, User } from "lucide-react";
 import type { ChatRecord } from "../common/types";
-import { BootstrapProvider, useBootstrapContext } from "./context/BootstrapContext";
+import { BootstrapProvider } from "./context/BootstrapContext";
 import { ViewProvider, useViewContext } from "./context/ViewContext";
 import { ChatProvider } from "./context/ChatContext";
 import { CharacterListPage } from "./pages/CharacterListPage";

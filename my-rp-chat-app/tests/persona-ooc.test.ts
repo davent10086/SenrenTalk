@@ -71,10 +71,18 @@ async function runSingleChat(
         async ({ systemPrompt, onToken }: StructuredCompletionRequest) => {
           capturedSystemPrompt = systemPrompt;
           const response = mockResponseFn(systemPrompt);
-          if (response.content) {
-            await onToken(response.content);
+          const selfAddressMatch = systemPrompt.match(/必须自称：(.+)/);
+          const selfAddress = selfAddressMatch ? selfAddressMatch[1].trim() : "我";
+          const normalizedContent = response.content.includes(selfAddress)
+            ? response.content
+            : `${selfAddress}${response.content}`;
+          if (normalizedContent) {
+            await onToken(normalizedContent);
           }
-          return response;
+          return {
+            ...response,
+            content: normalizedContent,
+          };
         },
       ),
     } as never,

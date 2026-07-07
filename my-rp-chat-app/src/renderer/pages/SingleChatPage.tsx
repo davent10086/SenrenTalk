@@ -1,10 +1,25 @@
-﻿import { useViewContext } from "../context/ViewContext";
+import { useViewContext } from "../context/ViewContext";
 import { useChatContext } from "../context/ChatContext";
 import { ChatWorkspace } from "../components/ChatWorkspace";
 
 export function SingleChatPage() {
   const { activeChat } = useViewContext();
-  const { messages, drafts, agentStatus, activeRoleId, isStreaming, streamError, sendMessage, refreshMessages, retryAudio, clearChat, deleteChat } = useChatContext();
+  const {
+    messages,
+    drafts,
+    agentStatus,
+    activeRoleId,
+    isStreaming,
+    streamError,
+    streamNotice,
+    sendMessage,
+    editMessageAndRegenerate,
+    stopGeneration,
+    refreshMessages,
+    retryAudio,
+    clearChat,
+    deleteChat,
+  } = useChatContext();
 
   return (
     <ChatWorkspace
@@ -16,9 +31,12 @@ export function SingleChatPage() {
       activeRoleId={activeRoleId}
       isStreaming={isStreaming}
       error={streamError}
+      notice={streamNotice}
       onSend={async (content, _mentionTarget, attachments) => sendMessage(content, null, attachments)}
       onRefreshMessages={refreshMessages}
       onRetryAudio={retryAudio}
+      onEditAndRegenerate={editMessageAndRegenerate}
+      onStopGeneration={stopGeneration}
       onClear={clearChat}
       onDelete={deleteChat}
     />
