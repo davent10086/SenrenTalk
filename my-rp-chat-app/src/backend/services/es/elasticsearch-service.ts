@@ -24,6 +24,14 @@ const HIGH_FREQUENCY_TAGS = new Set([
   "平静",
 ]);
 
+const CHARACTER_NAME_VARIANTS: Record<string, string[]> = {
+  丛雨: ["丛雨丸", "丛雨"],
+  芳乃: ["朝武芳乃", "芳乃"],
+  茉子: ["常陆茉子", "茉子"],
+  蕾娜: ["蕾娜·列支敦瑙尔", "蕾娜"],
+  将臣: ["有地将臣", "将臣"],
+};
+
 interface DatasetRow extends Record<string, unknown> {
   dialogue_id?: string;
   passage_id?: string;
@@ -62,6 +70,54 @@ function rrfFuse(resultSets: RetrievedDoc[][], limit: number): RetrievedDoc[] {
     .slice(0, limit)
     .map(([sourceId]) => docs.get(sourceId))
     .filter((doc): doc is RetrievedDoc => Boolean(doc));
+}
+
+function stripCharacterNameFromQuery(query: string, character?: string): string {
+  if (!character) {
+    return query;
+  }
+
+  const names = CHARACTER_NAME_VARIANTS[character] ?? [character];
+  let stripped = query;
+  for (const name of names) {
+    stripped = stripped.split(name).join("");
+  }
+
+  const normalized = stripped.replace(/\s+/g, " ").trim();
+  return normalized || query;
+}
+
+function normalizeForLexicalMatch(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/[「」『』“”"'’‘，。！？、：；（）()【】\[\]\s]/g, "")
+    .trim();
+}
+
+function buildCharacterBigrams(text: string): Set<string> {
+  const normalized = normalizeForLexicalMatch(text);
+  const grams = new Set<string>();
+  for (let i = 0; i < normalized.length - 1; i += 1) {
+    grams.add(normalized.slice(i, i + 2));
+  }
+  return grams;
+}
+
+function lexicalOverlapScore(query: string, text: string): number {
+  const queryGrams = buildCharacterBigrams(query);
+  if (queryGrams.size === 0) {
+    return 0;
+  }
+
+  const normalizedText = normalizeForLexicalMatch(text);
+  let hits = 0;
+  queryGrams.forEach((gram) => {
+    if (normalizedText.includes(gram)) {
+      hits += 1;
+    }
+  });
+
+  return Math.min(hits / Math.min(queryGrams.size, 8), 1);
 }
 
 function buildFilters(filters: RetrievalFilters, isMemory = false): Array<Record<string, unknown>> {
@@ -382,6 +438,7 @@ export class ElasticsearchService {
     const topK = filters.topK ?? this.config.topK;
     const candidateSize = topK * 3;
     const commonFilters = buildFilters(filters, false);
+    const retrievalQuery = stripCharacterNameFromQuery(query, filters.character);
     // 过滤高频标签，避免噪声匹配
     const tagTerms = [
       ...(filters.tags?.scene ?? []),
@@ -391,12 +448,12 @@ export class ElasticsearchService {
     ].filter((tag) => !HIGH_FREQUENCY_TAGS.has(tag));
 
     // 提前计算 query embedding，供 dense 检索和 rerank 复用
-    const queryVector = await this.tryEmbed(query, "dialogue-search");
+    const queryVector = await this.tryEmbed(retrievalQuery, "dialogue-search");
 
     // 三路并行检索
     const [denseResults, bm25Results, tagResults] = await Promise.all([
       this.runDenseQuery(this.config.esDialogueIndex, queryVector, candidateSize, commonFilters, false),
-      this.runBm25Query(this.config.esDialogueIndex, query, candidateSize, ["text^2", "text_norm", "all_tags"], commonFilters, false),
+      this.runBm25Query(this.config.esDialogueIndex, retrievalQuery, candidateSize, ["text^2", "text_norm", "all_tags"], commonFilters, false),
       tagTerms.length > 0
         ? this.runTagQuery(this.config.esDialogueIndex, tagTerms, candidateSize, commonFilters)
         : Promise.resolve([]),
@@ -404,7 +461,7 @@ export class ElasticsearchService {
 
     // 三路单次 RRF 融合
     const fused = rrfFuse([denseResults, bm25Results, tagResults], candidateSize);
-    return this.rerankByEmbedding(query, fused, topK, queryVector);
+    return this.rerankByEmbedding(retrievalQuery, fused, topK, queryVector);
   }
 
   /**
@@ -594,7 +651,8 @@ export class ElasticsearchService {
         const normA = Math.sqrt(emb.reduce((sum, v) => sum + v * v, 0));
         const normB = Math.sqrt(queryVector.reduce((sum, v) => sum + v * v, 0));
         const cosine = normA > 0 && normB > 0 ? dot / (normA * normB) : 0;
-        return { ...doc, score: cosine };
+        const lexicalBoost = lexicalOverlapScore(query, doc.text) * 0.15;
+        return { ...doc, score: cosine + lexicalBoost };
       });
 
       return scored

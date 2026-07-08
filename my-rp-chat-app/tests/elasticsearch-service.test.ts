@@ -112,6 +112,24 @@ describe("ElasticsearchService.hybridSearch (embedding dedup fix)", () => {
     expect(mockEmbed).toHaveBeenCalledWith("测试查询");
   });
 
+  it("strips redundant filtered character names before searching", async () => {
+    const { ElasticsearchService } = await import("../src/backend/services/es/elasticsearch-service");
+    const service = new ElasticsearchService(createTestConfig());
+
+    const emptyHits = { hits: { hits: [] } };
+    mockSearch
+      .mockResolvedValueOnce(emptyHits)
+      .mockResolvedValueOnce(emptyHits);
+
+    await service.hybridSearch("芳乃在厨房里开心地做饭", {
+      character: "芳乃",
+      topK: 10,
+    });
+
+    expect(mockEmbed).toHaveBeenCalledWith("在厨房里开心地做饭");
+    expect(mockSearch.mock.calls[1][0].query.bool.must[0].multi_match.query).toBe("在厨房里开心地做饭");
+  });
+
   it("tag search uses candidateSize (topK*3) instead of topK", async () => {
     // 修复前：tag 检索 size: topK，dense/bm25 size: candidateSize (topK*3)
     // 修复后：tag 检索也使用 candidateSize，三路候选集大小一致

@@ -4,7 +4,6 @@ import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
 import { initDatabaseSchema } from "./schema";
 import {
-  createDefaultGroupChatRoomConfig,
   createDefaultGroupChatRoomState,
   normalizeGroupChatRoomConfig,
 } from "../../common/types";
