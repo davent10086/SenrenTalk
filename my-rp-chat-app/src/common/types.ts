@@ -405,6 +405,34 @@ export function createDefaultGroupChatRoomConfig(participantCount: number): Grou
   };
 }
 
+export function normalizeGroupChatRoomConfig(
+  participantCount: number,
+  roomConfig?: Partial<GroupChatRoomConfig>,
+  fallbackTargetRoleId?: string | null,
+): GroupChatRoomConfig {
+  const defaults = createDefaultGroupChatRoomConfig(participantCount);
+  const merged: GroupChatRoomConfig = {
+    ...defaults,
+    ...roomConfig,
+    targetRoleId: roomConfig?.targetRoleId ?? fallbackTargetRoleId ?? defaults.targetRoleId,
+    hostRoleId: roomConfig?.hostRoleId ?? defaults.hostRoleId,
+  };
+
+  if (merged.mode === "single_round") {
+    return {
+      ...merged,
+      maxRounds: 1,
+      maxMessages: Math.min(Math.max(1, merged.maxMessages), Math.max(1, participantCount)),
+    };
+  }
+
+  return {
+    ...merged,
+    maxRounds: Math.max(1, merged.maxRounds),
+    maxMessages: Math.max(1, merged.maxMessages),
+  };
+}
+
 export function createDefaultGroupChatRoomState(
   roomConfig?: Partial<GroupChatRoomConfig>,
 ): GroupChatRoomState {

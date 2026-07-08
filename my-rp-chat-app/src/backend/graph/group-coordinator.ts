@@ -2,6 +2,7 @@ import { type LangChainTracer } from "@langchain/core/tracers/tracer_langchain";
 import {
   createDefaultGroupChatRoomConfig,
   createDefaultGroupChatRoomState,
+  normalizeGroupChatRoomConfig,
   type ChatMessage,
   type ChatMode,
   type GroupChatGenerationReason,
@@ -487,11 +488,11 @@ export class GroupChatCoordinator {
       return;
     }
     const { chatId, streamId, participants, mentionTarget, messages, tracer } = params;
-    const roomConfig = {
+    const roomConfig = normalizeGroupChatRoomConfig(participants.length, {
       ...createDefaultGroupChatRoomConfig(participants.length),
       ...this.roomConfig,
       maxMessages: this.roomConfig.maxMessages || Math.max(1, participants.length),
-    };
+    });
     let roomState = createDefaultGroupChatRoomState(roomConfig);
     let sharedHistory = [...messages];
     let generatedCount = 0;

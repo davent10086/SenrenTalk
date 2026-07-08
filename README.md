@@ -15,19 +15,50 @@
 
 ## 项目简介
 
-SenrenTalk 是一个以 `千恋万花（Senren * Banka）` 角色扮演体验为灵感来源的多角色 AI 对话项目。
+SenrenTalk 是一个以《千恋＊万花（Senren * Banka）》角色扮演体验为灵感来源的多角色 AI 对话项目。
 
-它不是通用型助手聊天产品，而是更偏向沉浸式角色陪伴与角色群聊体验。当前项目重点放在：
+它不是通用助手型聊天产品，而是更偏向：
 
-- 让角色持续保持人设与语气一致
-- 支持单聊与多角色群聊
-- 让对话具备可延续的记忆
-- 支持图片输入与身份敏感场景理解
-- 提供更接近语音陪伴的聊天体验
+- 角色陪伴
+- 角色群聊
+- 长期关系与记忆延续
+- 图片参与下的角色判断与回应
+- 更接近语音陪伴的互动体验
 
-主应用位于 [my-rp-chat-app](./my-rp-chat-app/)，角色数据、检索资产和辅助脚本与应用代码一起保存在本仓库中。
+主应用位于 [my-rp-chat-app](./my-rp-chat-app/)。
+
+## 文档入口
+
+如果你是第一次看这个仓库，建议按下面顺序阅读：
+
+1. 当前 README：了解整体结构、运行方式和能力边界
+2. [docs/agent-call-chain.md](./docs/agent-call-chain.md)：看单聊调用链路
+3. [docs/group-chat-coordination.md](./docs/group-chat-coordination.md)：看群聊协调器
+4. [my-rp-chat-app/README.md](./my-rp-chat-app/README.md)：看应用目录入口
+
+文档分工如下：
+
+- 根 README：项目总览、架构、环境、运行方式
+- `docs/agent-call-chain.md`：单聊请求如何进入 LangGraph 并完成回复
+- `docs/group-chat-coordination.md`：群聊如何规划轮次、调度角色和防止复读
+- `my-rp-chat-app/README.md`：应用目录导航，不重复维护长说明
 
 ## 运行截图
+
+### 2026-07-08 实机启动验证
+
+- 启动方式：在 `my-rp-chat-app/` 中执行 `npm.cmd run dev`
+- 验证模式：临时使用 `ES_ENABLED=false`、`TTS_PROVIDER=disabled` 跑通最小可用链路
+- 完成操作：打开角色列表，进入 `single_round` 群聊，发送真实消息，等待三位角色依次完成回复
+- 验证结果：房间以“本轮已结束”收尾，没有继续多跑额外轮次
+
+### 实测首页
+
+![实测首页](./docs/images/readme-home.png)
+
+### 实测群聊完成页
+
+![实测群聊完成页](./docs/images/readme-group-chat.png)
 
 ### 角色列表
 
@@ -52,45 +83,66 @@ SenrenTalk 是一个以 `千恋万花（Senren * Banka）` 角色扮演体验为
 - 支持日语 TTS 与角色音色映射
 - 群聊 V2 已进入房间化改造，支持轮次状态、定向发言与反复读保护
 
-## 架构图
+## 架构总览
 
 ```mermaid
 flowchart LR
     U["用户"] --> UI["React 前端"]
-    UI --> API["Express API + SSE"]
-    API --> RT["App Runtime"]
-    RT --> GC["群聊协调器"]
+    UI --> API["Express API"]
+    API --> AS["ApiService"]
+    AS --> RT["AppRuntime"]
     RT --> SC["单聊 LangGraph"]
-    GC --> LLM["LLM 服务"]
-    SC --> LLM
-    RT --> MEM["记忆服务"]
-    RT --> DB["SQLite 仓库"]
-    RT --> ES["Elasticsearch 检索"]
-    RT --> TTS["TTS 服务"]
-    UI --> MEDIA["图片 / 音频附件"]
-    MEDIA --> API
+    RT --> GC["GroupChatCoordinator"]
+    RT --> DB["SQLite"]
+    RT --> MEM["MemoryService"]
+    RT --> ES["Elasticsearch"]
+    RT --> TTS["TTS Service"]
+    SC --> LLM["LLM Service"]
+    GC --> SC
 ```
 
-## 功能流程图
+这张图只描述“模块关系”。  
+如果你想看请求真正如何流动，请直接看下面两份细化文档：
+
+- 单聊调用链路：[docs/agent-call-chain.md](./docs/agent-call-chain.md)
+- 群聊协调说明：[docs/group-chat-coordination.md](./docs/group-chat-coordination.md)
+
+## 请求流向
+
+### 单聊
 
 ```mermaid
 flowchart TD
-    A["用户发送消息"] --> B["前端提交到 API"]
-    B --> C["App Runtime 持久化用户消息"]
-    C --> D{"聊天模式"}
-    D -->|单聊| E["单聊 LangGraph"]
-    D -->|群聊| F["群聊协调器生成本轮计划"]
-    E --> G["检索上下文与记忆"]
-    F --> H["按房间模式调度角色发言"]
-    G --> I["调用模型流式生成"]
-    H --> I
-    I --> J["响应校验 / 反复读保护"]
-    J --> K["保存消息与元数据"]
-    K --> L["可选生成 TTS 音频"]
-    K --> M["通过 SSE 推送到前端"]
-    L --> M
-    M --> N["前端实时渲染消息、状态与音频"]
+    A["前端 sendMessage()"] --> B["POST /api/chats/:chatId/send"]
+    B --> C["ApiService.sendMessage()"]
+    C --> D["AppRuntime.sendMessage()"]
+    D --> E["ChatSessionService.launchGeneration()"]
+    E --> F["createSingleChatGraph().invoke()"]
+    F --> G["SSE token / message_done / audio_ready"]
 ```
+
+详细说明见：
+
+- [docs/agent-call-chain.md](./docs/agent-call-chain.md)
+
+### 群聊
+
+```mermaid
+flowchart TD
+    A["前端 sendMessage()"] --> B["POST /api/chats/:chatId/send"]
+    B --> C["ApiService.sendMessage()"]
+    C --> D["AppRuntime.sendMessage()"]
+    D --> E["ChatSessionService.launchGeneration()"]
+    E --> F["GroupChatCoordinator.runSession()"]
+    F --> G["planRound()"]
+    G --> H["runAgentTurn(roleId)"]
+    H --> I["createSingleChatGraph().invoke()"]
+    I --> J["round_stats / room_finished / message_done"]
+```
+
+详细说明见：
+
+- [docs/group-chat-coordination.md](./docs/group-chat-coordination.md)
 
 ## 群聊 V2
 
@@ -98,7 +150,7 @@ flowchart TD
 
 ### 目标
 
-- 用户能看懂当前是哪个房间模式
+- 用户能看懂当前是哪种房间模式
 - 用户能看懂谁在回应谁
 - 默认不再意外多跑一轮
 - 降低机械接话和高频复读
@@ -109,6 +161,10 @@ flowchart TD
 - `single_round`：默认模式，每个角色本轮最多回复一次
 - `free_chat`：允许继续接话，但必须受轮次和消息预算约束
 - `host_mode`：由主持角色串场、点名、收尾
+
+群聊实现细节已单独整理在：
+
+- [docs/group-chat-coordination.md](./docs/group-chat-coordination.md)
 
 ## 目录结构
 
@@ -174,6 +230,69 @@ SenrenTalk/
 - 可选：Elasticsearch
 - 可选：本地或远程 Embedding 服务
 
+### 先理解仓库里的两类脚本
+
+这个仓库里有两组容易混淆的脚本：
+
+- 根目录 `脚本/`
+  用于离线整理原始语料，产出 `索引数据/` 里的 JSON / JSONL 数据文件。
+- `my-rp-chat-app/scripts/`
+  用于应用侧的索引构建、检索验证和调试。
+
+可以先这样理解：
+
+- 如果你只是想把应用跑起来，通常不需要先跑根目录 `脚本/`
+- 如果你要从原始数据重新生成 `索引数据/`，才需要使用根目录 `脚本/`
+- 如果你已经有现成的 `索引数据/`，只想把数据灌进 Elasticsearch，优先使用 `my-rp-chat-app` 里的脚本和命令
+
+### 推荐启动路径
+
+根据目的不同，建议走下面两条路径之一：
+
+#### 路径 A：最小可用启动
+
+适合先把聊天应用跑起来，验证单聊、群聊、SSE 和本地 SQLite 是否正常。
+
+1. 安装 `my-rp-chat-app/` 依赖
+2. 配置 `.env`
+3. 直接启动应用
+
+这条路径里：
+
+- Elasticsearch 不是必需的，但要显式设置 `ES_ENABLED=false`
+- 根目录 `脚本/` 不是必需的
+- 检索能力会按当前配置自动启用或降级
+
+最小可用配置至少建议包含：
+
+```env
+LLM_API_KEY=your_llm_api_key
+ES_ENABLED=false
+TTS_PROVIDER=disabled
+```
+
+原因是：
+
+- `LLM_API_KEY` 缺失时，LLM 调用会直接报错
+- `TTS_PROVIDER` 默认就是 `disabled`，这一项写不写都可以，但写出来更明确
+- `ES_ENABLED` 默认值是 `true`，如果你不打算启动 Elasticsearch，需要手动关掉
+
+#### 路径 B：带检索增强的完整启动
+
+适合你要验证：
+
+- Elasticsearch 检索
+- embedding 召回
+- 对话索引重建
+- 检索相关测试脚本
+
+这条路径额外需要：
+
+1. 准备好 `索引数据/`
+2. 启动 Elasticsearch
+3. 准备 embedding 服务，例如 Ollama 的 `bge-m3`
+4. 在 `my-rp-chat-app/` 中执行索引构建命令
+
 ### 安装依赖
 
 进入 `my-rp-chat-app/` 后执行：
@@ -182,7 +301,7 @@ SenrenTalk/
 npm install
 ```
 
-如果 PowerShell 下 `npm` 调用异常，可以使用：
+如果 PowerShell 里 `npm` 调用异常，可以使用：
 
 ```bash
 npm.cmd install
@@ -215,6 +334,23 @@ Windows 下也可以直接复制 `my-rp-chat-app/.env.example` 并重命名为 `
 | `DATASET_DIR` | 默认为 `../索引数据` |
 | `TTS_PROVIDER` | 当前启用的 TTS 提供方 |
 
+如果你准备走“带检索增强的完整启动”路径，至少还要确认：
+
+- `ES_NODE`
+- `ES_USERNAME` / `ES_PASSWORD`
+- `OLLAMA_HOST`
+- `OLLAMA_MODEL_NAME`
+
+其中：
+
+- `DATASET_DIR` 默认指向仓库根目录下的 `索引数据/`
+- `npm.cmd run index:dialogues` 会直接读取这份数据来构建 ES 对话索引
+
+如果你准备走“最小可用启动”路径，建议额外确认：
+
+- `ES_ENABLED=false`
+- `TTS_PROVIDER=disabled`
+
 ### 启动项目
 
 ```bash
@@ -238,11 +374,55 @@ npm.cmd run dev
 - 前端：`http://localhost:5173`
 - 后端：`http://127.0.0.1:3001`
 
+如果 `5173` 已被占用，Vite 会自动顺延到下一个可用端口，例如 `5174`。
+
 仅启动后端：
 
 ```bash
 npm run start
 ```
+
+### 如果要启用检索增强
+
+在 `my-rp-chat-app/` 目录下执行：
+
+```bash
+npm.cmd run index:dialogues
+```
+
+这条命令会：
+
+- 读取 `DATASET_DIR` 指向的数据集
+- 通过 `ElasticsearchService.buildDialogueIndex()` 重建对话索引
+- 在可用时调用 embedding 服务生成向量
+
+如果这一步失败，优先检查：
+
+- Elasticsearch 是否可连通
+- `ES_PASSWORD` 等认证参数是否正确
+- embedding 服务是否已启动
+- `DATASET_DIR` 是否确实指向包含索引数据的目录
+
+### 如果要从原始数据重建 `索引数据/`
+
+只有在你修改了原始语料、标签规则或角色约束时，才需要关心根目录 `脚本/`。
+
+它们大致分成四类：
+
+- `脚本/build_indexes.js`
+  从原始语料生成清洗后的主索引数据，例如 `dialogues_clean.jsonl`、`dialogue_passages.jsonl`
+- `脚本/build_dialogue_tags.js`
+  为对话和段落补充标签数据，例如 `dialogue_tags.jsonl`、`passage_tags.jsonl`
+- `脚本/build_character_constraints.js`
+  生成角色约束与提示词资料
+- `脚本/upload_to_es_bge_m3.py`
+  旧的数据上传脚本，会直接把 `索引数据/` 写入 Elasticsearch 并调用 Ollama embedding
+
+对大多数开发者来说，推荐顺序是：
+
+1. 优先复用仓库里已有的 `索引数据/`
+2. 进入 `my-rp-chat-app/` 执行 `npm.cmd run index:dialogues`
+3. 只有在确实需要重建数据资产时，再回头使用根目录 `脚本/`
 
 ## 常用命令
 
@@ -266,6 +446,21 @@ npm.cmd run build
 npm.cmd run index:dialogues
 ```
 
+如果你要手动跑根目录数据脚本，可在仓库根目录执行：
+
+```bash
+# 从原始语料生成清洗后的索引数据
+node .\脚本\build_indexes.js
+
+# 生成对话 / 段落标签
+node .\脚本\build_dialogue_tags.js
+
+# 生成角色约束
+node .\脚本\build_character_constraints.js
+```
+
+这几条命令面向“数据资产重建”，不是日常启动应用的必经步骤。
+
 ## 测试与质量
 
 当前测试覆盖：
@@ -285,22 +480,15 @@ npm.cmd run typecheck
 npm.cmd run test
 ```
 
-## 文档入口
-
-- 应用说明：[my-rp-chat-app/README.md](./my-rp-chat-app/README.md)
-- 单聊调用链路：[docs/agent-call-chain.md](./docs/agent-call-chain.md)
-- 群聊协调说明：[docs/group-chat-coordination.md](./docs/group-chat-coordination.md)
-
 ## 注意事项
 
 - 在当前 PowerShell 环境里，`npm.cmd` 可能比直接调用 `npm` 更稳定
 - 开发环境下可以临时放宽 Elasticsearch TLS 校验，但不适合生产环境
-- 图片理解能力已增加身份一致性控制，但面对多人物、遮挡、低清图和误导性提问时仍需谨慎
+- 图片理解能力已增加身份一致性控制，但面对多人图、遮挡、低清图和误导性提问时仍需谨慎
 
 ## 版权说明
 
-本项目中的角色设定、对话素材与剧情参考来源于 `千恋万花（Senren * Banka）`，其原始版权归 Yuzusoft 所有。
-
+本项目中的角色设定、对话素材与剧情参考来源于《千恋＊万花（Senren * Banka）》，其原始版权归 Yuzusoft 所有。  
 本仓库仅用于学习、研究与技术演示，请勿将受版权保护的原始内容用于未经授权的商业用途。
 
 ## License

@@ -267,6 +267,32 @@ describe("ChatRepository", () => {
     repository.close();
   });
 
+  it("normalizes stale single_round config when switching back from free_chat", () => {
+    const { repository } = createRepository("rp-chat-db-room-single-round-normalize-");
+    repository.upsertCharacters([createCharacter("丛雨"), createCharacter("芳乃"), createCharacter("茉子")]);
+
+    const chat = repository.createChat("group", ["丛雨", "芳乃", "茉子"], "群聊");
+
+    repository.updateChatRoomConfig(chat.id, {
+      mode: "free_chat",
+      maxRounds: 3,
+      maxMessages: 9,
+    });
+
+    const normalized = repository.updateChatRoomConfig(chat.id, {
+      mode: "single_round",
+      maxRounds: 3,
+      maxMessages: 9,
+    });
+
+    expect(normalized.roomConfig).toMatchObject({
+      mode: "single_round",
+      maxRounds: 1,
+      maxMessages: 3,
+    });
+    repository.close();
+  });
+
   it("migrates legacy chats without room columns and backfills default room data", () => {
     const tempDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "rp-chat-db-room-migrate-"));
     createdDirectories.push(tempDirectory);

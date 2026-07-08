@@ -599,6 +599,79 @@ describe("GroupChatCoordinator", () => {
     repository.close();
   });
 
+  it("treats single_round as one round even if stale maxRounds and maxMessages are larger", async () => {
+    const tempDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "rp-chat-single-round-clamp-"));
+    createdDirectories.push(tempDirectory);
+
+    const repository = new ChatRepository(path.join(tempDirectory, "test.sqlite"));
+    repository.init();
+    repository.upsertCharacters([
+      createCharacter("丛雨"),
+      createCharacter("芳乃"),
+      createCharacter("茉子"),
+    ]);
+    const chat = repository.createChat("group", ["丛雨", "芳乃", "茉子"], "测试群聊", {
+      mode: "single_round",
+      maxRounds: 3,
+      maxMessages: 9,
+    });
+    repository.appendMessage({ chatId: chat.id, role: "user", content: "大家好" });
+
+    const deps = {
+      repository,
+      characterService: {} as never,
+      elasticsearchService: {
+        hybridSearch: vi.fn().mockResolvedValue([]),
+      } as never,
+      llmService: {
+        streamStructuredCompletion: vi
+          .fn()
+          .mockImplementation(async ({ systemPrompt, onToken }: StructuredCompletionRequest) => {
+            const selfAddress = extractSelfAddress(systemPrompt);
+            const content = `${selfAddress}回应`;
+            await onToken(content);
+            return { content, speechTextJa: "", raw: "{}" };
+          }),
+      } as never,
+      memoryService: {
+        recall: vi.fn().mockResolvedValue([]),
+        getSummary: vi.fn().mockReturnValue(undefined),
+        getCoreMemory: vi.fn().mockReturnValue(null),
+        extractAndPersist: vi.fn().mockResolvedValue(null),
+        consolidateCoreMemory: vi.fn().mockResolvedValue(null),
+      } as never,
+      sseService: {
+        publish: vi.fn(),
+      } as never,
+    };
+
+    const coordinator = new GroupChatCoordinator(
+      deps,
+      {
+        mode: "single_round",
+        maxRounds: 3,
+        maxMessages: 9,
+      },
+      2,
+      0,
+    );
+    await coordinator.runSession({
+      chatId: chat.id,
+      streamId: "stream-test",
+      participants: ["丛雨", "芳乃", "茉子"],
+      mentionTarget: null,
+      messages: repository.listMessages(chat.id),
+    });
+
+    const assistantMessages = repository
+      .listMessages(chat.id)
+      .filter((m) => m.role === "assistant")
+      .map((m) => m.roleId);
+
+    expect(assistantMessages).toEqual(["丛雨", "芳乃", "茉子"]);
+    repository.close();
+  });
+
   it("processMemories runs in parallel for all participants", async () => {
     // 验证修复后 processMemories 并行处理：所有角色的记忆处理应同时开始
     const tempDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "rp-chat-parallel-"));

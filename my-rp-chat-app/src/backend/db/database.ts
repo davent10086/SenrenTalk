@@ -6,6 +6,7 @@ import { initDatabaseSchema } from "./schema";
 import {
   createDefaultGroupChatRoomConfig,
   createDefaultGroupChatRoomState,
+  normalizeGroupChatRoomConfig,
 } from "../../common/types";
 import type {
   CharacterProfile,
@@ -39,14 +40,7 @@ function normalizeRoomConfig(
   if (mode !== "group") {
     return undefined;
   }
-
-  const defaults = createDefaultGroupChatRoomConfig(participants.length);
-  return {
-    ...defaults,
-    ...roomConfig,
-    targetRoleId: roomConfig?.targetRoleId ?? fallbackTargetRoleId ?? defaults.targetRoleId,
-    hostRoleId: roomConfig?.hostRoleId ?? defaults.hostRoleId,
-  };
+  return normalizeGroupChatRoomConfig(participants.length, roomConfig, fallbackTargetRoleId);
 }
 
 function normalizeRoomState(

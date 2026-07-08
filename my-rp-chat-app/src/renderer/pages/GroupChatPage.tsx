@@ -1,6 +1,7 @@
 import { ChatWorkspace } from "../components/ChatWorkspace";
 import { useChatContext } from "../context/ChatContext";
 import { useViewContext } from "../context/ViewContext";
+import { createDefaultGroupChatRoomConfig, type GroupChatRoomMode } from "../../common/types";
 
 export function GroupChatPage() {
   const { activeChat, updateGroupChatRoom } = useViewContext();
@@ -29,6 +30,26 @@ export function GroupChatPage() {
   } = useChatContext();
 
   const effectiveTarget = targetRoleId ?? activeChat?.roomConfig?.targetRoleId ?? null;
+  const participantCount = activeChat?.participants.length ?? 0;
+
+  const handleModeChange = (nextMode: GroupChatRoomMode) => {
+    const defaults = createDefaultGroupChatRoomConfig(participantCount);
+    void updateGroupChatRoom({
+      roomConfig: {
+        mode: nextMode,
+        maxRounds: nextMode === "single_round" ? 1 : defaults.maxRounds,
+        maxMessages: nextMode === "single_round" ? Math.max(1, participantCount) : defaults.maxMessages,
+      },
+      roomState: {
+        currentRound: 0,
+        currentTurn: 0,
+        plannedSpeakers: [],
+        lastSpeakers: [],
+        skippedRoles: [],
+        lastFinishedReason: undefined,
+      },
+    });
+  };
 
   return (
     <ChatWorkspace
@@ -59,9 +80,7 @@ export function GroupChatPage() {
         <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
           <select
             value={activeChat?.roomConfig?.mode ?? "single_round"}
-            onChange={(event) => void updateGroupChatRoom({
-              roomConfig: { mode: event.target.value as "single_round" | "free_chat" | "host_mode" },
-            })}
+            onChange={(event) => handleModeChange(event.target.value as GroupChatRoomMode)}
             style={{
               padding: "4px 8px",
               fontSize: "0.85rem",
