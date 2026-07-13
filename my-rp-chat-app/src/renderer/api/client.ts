@@ -16,9 +16,20 @@ import type {
 import type { PendingAttachmentDraft } from "../types";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "";
+const API_TOKEN = import.meta.env.VITE_LOCAL_API_TOKEN ?? "";
 
 function buildApiUrl(path: string): string {
   return `${API_BASE}${path}`;
+}
+
+function authHeaders(headers: Record<string, string> = {}): Record<string, string> {
+  if (!API_TOKEN) {
+    return headers;
+  }
+  return {
+    ...headers,
+    Authorization: `Bearer ${API_TOKEN}`,
+  };
 }
 
 async function readJsonResponse<T>(response: Response): Promise<T> {
@@ -47,7 +58,9 @@ export function resolveMediaUrl(relativePath: string): string {
  * @returns 启动引导数据载荷
  */
 export async function bootstrap(): Promise<BootstrapPayload> {
-  return readJsonResponse<BootstrapPayload>(await fetch(buildApiUrl("/api/bootstrap")));
+  return readJsonResponse<BootstrapPayload>(await fetch(buildApiUrl("/api/bootstrap"), {
+    headers: authHeaders(),
+  }));
 }
 
 /**
@@ -55,7 +68,9 @@ export async function bootstrap(): Promise<BootstrapPayload> {
  * @returns 公开设置对象
  */
 export async function getSettings(): Promise<PublicSettings> {
-  return readJsonResponse<PublicSettings>(await fetch(buildApiUrl("/api/settings")));
+  return readJsonResponse<PublicSettings>(await fetch(buildApiUrl("/api/settings"), {
+    headers: authHeaders(),
+  }));
 }
 
 /**
@@ -63,7 +78,9 @@ export async function getSettings(): Promise<PublicSettings> {
  * @returns 会话记录数组
  */
 export async function listChats(): Promise<ChatRecord[]> {
-  return readJsonResponse<ChatRecord[]>(await fetch(buildApiUrl("/api/chats")));
+  return readJsonResponse<ChatRecord[]>(await fetch(buildApiUrl("/api/chats"), {
+    headers: authHeaders(),
+  }));
 }
 
 /**
@@ -72,7 +89,11 @@ export async function listChats(): Promise<ChatRecord[]> {
  * @returns 消息数组
  */
 export async function listMessages(chatId: string): Promise<ChatMessage[]> {
-  return readJsonResponse<ChatMessage[]>(await fetch(buildApiUrl(`/api/chats/${encodeURIComponent(chatId)}/messages`)));
+  return readJsonResponse<ChatMessage[]>(
+    await fetch(buildApiUrl(`/api/chats/${encodeURIComponent(chatId)}/messages`), {
+      headers: authHeaders(),
+    }),
+  );
 }
 
 /**
@@ -80,13 +101,16 @@ export async function listMessages(chatId: string): Promise<ChatMessage[]> {
  * @returns 后台任务数组
  */
 export async function listJobs(): Promise<BackendJob[]> {
-  return readJsonResponse<BackendJob[]>(await fetch(buildApiUrl("/api/jobs")));
+  return readJsonResponse<BackendJob[]>(await fetch(buildApiUrl("/api/jobs"), {
+    headers: authHeaders(),
+  }));
 }
 
 export async function cancelJob(jobId: string): Promise<BackendJob> {
   return readJsonResponse<BackendJob>(
     await fetch(buildApiUrl(`/api/jobs/${encodeURIComponent(jobId)}/cancel`), {
       method: "POST",
+      headers: authHeaders(),
     }),
   );
 }
@@ -102,9 +126,9 @@ export async function createChat(payload: CreateChatRequest): Promise<ChatRecord
   return readJsonResponse<ChatRecord>(
     await fetch(buildApiUrl("/api/chats"), {
       method: "POST",
-      headers: {
+      headers: authHeaders({
         "Content-Type": "application/json",
-      },
+      }),
       body: JSON.stringify(payload),
     }),
   );
@@ -117,9 +141,9 @@ export async function updateGroupChatRoom(
   return readJsonResponse<ChatRecord>(
     await fetch(buildApiUrl(`/api/chats/${encodeURIComponent(chatId)}/room`), {
       method: "PATCH",
-      headers: {
+      headers: authHeaders({
         "Content-Type": "application/json",
-      },
+      }),
       body: JSON.stringify(payload),
     }),
   );
@@ -133,6 +157,7 @@ export async function clearMessages(chatId: string): Promise<void> {
   await readJsonResponse<void>(
     await fetch(buildApiUrl(`/api/chats/${encodeURIComponent(chatId)}/clear`), {
       method: "POST",
+      headers: authHeaders(),
     }),
   );
 }
@@ -145,6 +170,7 @@ export async function deleteChat(chatId: string): Promise<void> {
   await readJsonResponse<void>(
     await fetch(buildApiUrl(`/api/chats/${encodeURIComponent(chatId)}`), {
       method: "DELETE",
+      headers: authHeaders(),
     }),
   );
 }
@@ -157,6 +183,7 @@ export async function startDialogueIndexJob(): Promise<BackendJob> {
   return readJsonResponse<BackendJob>(
     await fetch(buildApiUrl("/api/jobs/dialogue-index"), {
       method: "POST",
+      headers: authHeaders(),
     }),
   );
 }
@@ -170,6 +197,7 @@ export async function regenerateMessageAudio(messageId: string): Promise<ChatMes
   return readJsonResponse<ChatMessage>(
     await fetch(buildApiUrl(`/api/messages/${encodeURIComponent(messageId)}/tts-regenerate`), {
       method: "POST",
+      headers: authHeaders(),
     }),
   );
 }
@@ -181,9 +209,9 @@ export async function editMessageAndRegenerate(
   return readJsonResponse<ChatSendResult>(
     await fetch(buildApiUrl(`/api/messages/${encodeURIComponent(messageId)}/edit-and-regenerate`), {
       method: "POST",
-      headers: {
+      headers: authHeaders({
         "Content-Type": "application/json",
-      },
+      }),
       body: JSON.stringify({ content }),
     }),
   );
@@ -232,6 +260,7 @@ export async function sendMessage(payload: Omit<ChatRequest, "attachments"> & {
   return readJsonResponse<ChatSendResult>(
     await fetch(buildApiUrl(`/api/chats/${encodeURIComponent(payload.chatId)}/send`), {
       method: "POST",
+      headers: authHeaders(),
       body: formData,
     }),
   );

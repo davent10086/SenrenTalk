@@ -8,6 +8,29 @@
  */
 import type { Request, Response, NextFunction } from "express";
 
+export function createApiTokenAuth(expectedToken?: string) {
+  const token = expectedToken?.trim();
+
+  return (request: Request, response: Response, next: NextFunction): void => {
+    if (!token) {
+      next();
+      return;
+    }
+
+    const authHeader = request.headers.authorization;
+    const providedToken = authHeader?.startsWith("Bearer ")
+      ? authHeader.slice(7).trim()
+      : "";
+
+    if (providedToken !== token) {
+      response.status(401).json({ message: "unauthorized" });
+      return;
+    }
+
+    next();
+  };
+}
+
 // ──────────────────────────────────────────
 //  速率限制
 // ──────────────────────────────────────────

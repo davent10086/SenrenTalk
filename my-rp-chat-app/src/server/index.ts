@@ -11,6 +11,7 @@ import type {
 } from "../common/types";
 import { createCorsMiddleware } from "./middleware/cors";
 import {
+  createApiTokenAuth,
   createRateLimiter,
   createUploadValidator,
   createErrorHandler,
@@ -142,9 +143,9 @@ async function main(): Promise<void> {
   // ── 中间件栈 ─────────────────────────
   // 顺序：CORS → 速率限制 → JSON 解析 → 上传校验
 
-  app.use(createCorsMiddleware(
-    /* allowNullOrigin */ true,  // Electron 开发环境需要文件协议支持
-  ));
+  app.use(createCorsMiddleware({
+    allowNullOrigin: process.env.CORS_ALLOW_NULL_ORIGIN === "true",
+  }));
   app.use(createRateLimiter({
     windowMs: 60 * 1000,
     maxRequests: 60,  // 每分钟 60 次，对 AI 聊天应用来说比较宽松
@@ -164,6 +165,8 @@ async function main(): Promise<void> {
   app.use("/media", express.static(api.runtime.config.mediaDir));
 
   // ── API 路由 ─────────────────────────
+
+  app.use("/api", createApiTokenAuth(process.env.LOCAL_API_TOKEN));
 
   app.get("/health", (_request, response) => {
     response.json({ ok: true });

@@ -7,6 +7,7 @@ from urllib.error import HTTPError, URLError
 import warnings
 from pathlib import Path
 from typing import Dict, Iterable, List
+from urllib.parse import urlparse
 
 from elasticsearch import Elasticsearch, helpers
 from tqdm import tqdm
@@ -29,6 +30,18 @@ TEXT_MAX_LENGTH = int(os.environ.get("TEXT_MAX_LENGTH", "512"))
 SPARSE_TOP_N = int(os.environ.get("SPARSE_TOP_N", "20"))
 OLLAMA_RETRY_COUNT = int(os.environ.get("OLLAMA_RETRY_COUNT", "3"))
 OLLAMA_RETRY_DELAY = float(os.environ.get("OLLAMA_RETRY_DELAY", "1.5"))
+
+
+def env_flag(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def is_loopback_url(url: str) -> bool:
+    host = urlparse(url).hostname
+    return host in {"localhost", "127.0.0.1", "::1"}
 
 
 def load_jsonl(file_path: Path) -> List[dict]:
@@ -158,12 +171,20 @@ def batched(rows: List[dict], batch_size: int) -> Iterable[List[dict]]:
 
 
 def create_es_client() -> Elasticsearch:
-    warnings.simplefilter("ignore", InsecureRequestWarning)
+    verify_certs = env_flag("ES_VERIFY_CERTS", True)
+    if not verify_certs:
+        if not is_loopback_url(ES_URL) and not env_flag("ES_ALLOW_INSECURE_REMOTE", False):
+            raise RuntimeError(
+                "Refusing to disable Elasticsearch TLS verification for a non-loopback ES_URL. "
+                "Set ES_ALLOW_INSECURE_REMOTE=true only for a trusted test environment."
+            )
+        warnings.simplefilter("ignore", InsecureRequestWarning)
+
     return Elasticsearch(
         ES_URL,
         basic_auth=(ES_USERNAME, ES_PASSWORD),
-        verify_certs=False,
-        ssl_show_warn=False,
+        verify_certs=verify_certs,
+        ssl_show_warn=verify_certs,
         request_timeout=120,
     )
 

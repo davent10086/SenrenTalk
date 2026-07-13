@@ -75,7 +75,9 @@ export class SseService {
    */
   constructor() {
     // 使用共享的 CORS 中间件
-    this.app.use(createCorsMiddleware(true));
+    this.app.use(createCorsMiddleware({
+      allowNullOrigin: process.env.CORS_ALLOW_NULL_ORIGIN === "true",
+    }));
 
     this.app.get("/health", (_request, response) => {
       response.json({ ok: true });

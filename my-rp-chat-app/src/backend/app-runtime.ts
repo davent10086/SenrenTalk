@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
 import { ChatSessionService, type ChatJobHooks } from "./chat-session-service";
 import { MediaManager } from "./media-manager";
 import type { AppConfig } from "./config";
@@ -202,6 +201,9 @@ export class AppRuntime {
 
   /** 清空指定会话的消息，同时删除 ES 中关联的记忆和媒体文件（图片/音频）。 */
   async clearMessages(chatId: string): Promise<void> {
+    if (!this.repository.getChat(chatId)) {
+      throw Object.assign(new Error("Chat not found"), { statusCode: 404 });
+    }
     await this.elasticsearchService.deleteMemoriesBySession(chatId);
     this.repository.clearMessages(chatId);
     await this.mediaManager.cleanupChatMedia(chatId);
@@ -209,6 +211,9 @@ export class AppRuntime {
 
   /** 删除指定会话及其所有关联数据，同时删除 ES 中关联的记忆和媒体文件（图片/音频）。 */
   async deleteChat(chatId: string): Promise<void> {
+    if (!this.repository.getChat(chatId)) {
+      throw Object.assign(new Error("Chat not found"), { statusCode: 404 });
+    }
     await this.elasticsearchService.deleteMemoriesBySession(chatId);
     this.repository.deleteChat(chatId);
     await this.mediaManager.cleanupChatMedia(chatId);
@@ -248,13 +253,13 @@ export class AppRuntime {
 
   /** 将媒体相对路径转为 file:// URL。 */
   resolveMediaUrl(relativePath: string): string {
-    return pathToFileURL(path.join(this.config.mediaDir, relativePath)).href;
+    return this.mediaManager.resolveMediaUrl(relativePath);
   }
 
   /** 读取媒体图片为 base64，用于多模态 LLM 图片理解。 */
   async readImageAsBase64(relativePath: string): Promise<ImageInput | null> {
     try {
-      const absolutePath = path.join(this.config.mediaDir, relativePath);
+      const absolutePath = this.mediaManager.resolveMediaPath(relativePath);
       const buffer = await fs.readFile(absolutePath);
       const ext = path.extname(relativePath).toLowerCase();
       const mimeType = ext === ".png" ? "image/png"
