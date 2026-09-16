@@ -188,6 +188,25 @@ export interface CoreMemory {
   keyFacts: string[]; lastUpdated: number;
 }
 
+export type MemoryStatus = "pending" | "confirmed" | "dismissed";
+export type MemoryEventType = "fact" | "state" | "plan";
+export type MemoryTemporalState = "past" | "active" | "planned" | "superseded" | "cancelled";
+
+export interface CoreMemoryCandidate {
+  id: string;
+  chatId: string;
+  character: string;
+  core: CoreMemory;
+  sourceSequence: number;
+  createdAt: number;
+}
+
+export interface ChatMemorySnapshot {
+  events: MemoryEvent[];
+  coreMemories: CoreMemory[];
+  coreCandidates: CoreMemoryCandidate[];
+}
+
 export interface MemoryEvent {
   id: string;
   chatId: string;
@@ -202,6 +221,14 @@ export interface MemoryEvent {
   timestamp: number;
   tags: string[];
   sourceMessageId?: string;
+  status?: MemoryStatus;
+  eventType?: MemoryEventType;
+  temporalState?: MemoryTemporalState;
+  occurredAt?: number;
+  recordedAt?: number;
+  sequence?: number;
+  supersedesEventId?: string;
+  factKey?: string;
 }
 
 export interface RetrievalFilters {

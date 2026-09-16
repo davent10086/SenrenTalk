@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { AppRuntime } from "../src/backend/app-runtime";
 
 describe("AppRuntime.clearMessages", () => {
-  it("deletes elasticsearch memories before clearing sqlite records, then cleans up media", async () => {
+  it("clears sqlite records before best-effort elasticsearch cleanup, then cleans up media", async () => {
     const steps: string[] = [];
     const deleteMemoriesBySession = vi.fn(async (chatId: string) => {
       steps.push(`es:${chatId}`);
@@ -26,8 +26,8 @@ describe("AppRuntime.clearMessages", () => {
     expect(deleteMemoriesBySession).toHaveBeenCalledWith("chat-1");
     expect(clearMessages).toHaveBeenCalledWith("chat-1");
     expect(cleanupChatMedia).toHaveBeenCalledWith("chat-1");
-    // 顺序：ES 记忆 → SQLite 记录 → 媒体文件
-    expect(steps).toEqual(["es:chat-1", "sqlite:chat-1", "media:chat-1"]);
+    // SQLite 是权威存储：ES 异常不能阻止用户清空记录。
+    expect(steps).toEqual(["sqlite:chat-1", "es:chat-1", "media:chat-1"]);
   });
 
   it("does not clean media when the chat does not exist", async () => {

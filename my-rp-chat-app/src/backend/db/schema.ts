@@ -45,7 +45,39 @@ export function initDatabaseSchema(db: Database.Database, chatLevelSummaryKey: s
       timestamp INTEGER NOT NULL,
       tags_json TEXT NOT NULL,
       source_message_id TEXT,
+      status TEXT NOT NULL DEFAULT 'pending',
+      event_type TEXT NOT NULL DEFAULT 'fact',
+      temporal_state TEXT NOT NULL DEFAULT 'active',
+      occurred_at INTEGER,
+      recorded_at INTEGER,
+      sequence INTEGER NOT NULL DEFAULT 0,
+      supersedes_event_id TEXT,
+      fact_key TEXT,
       FOREIGN KEY(chat_id) REFERENCES chats(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS core_memory_candidates (
+      id TEXT PRIMARY KEY,
+      chat_id TEXT NOT NULL,
+      character_id TEXT NOT NULL,
+      core_json TEXT NOT NULL,
+      source_sequence INTEGER NOT NULL,
+      created_at INTEGER NOT NULL,
+      UNIQUE(chat_id, character_id),
+      FOREIGN KEY(chat_id) REFERENCES chats(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS memory_consolidation_state (
+      chat_id TEXT NOT NULL,
+      character_id TEXT NOT NULL,
+      last_sequence INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY(chat_id, character_id),
+      FOREIGN KEY(chat_id) REFERENCES chats(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS app_metadata (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS core_memories (
@@ -79,6 +111,7 @@ export function initDatabaseSchema(db: Database.Database, chatLevelSummaryKey: s
   `);
 
   ensureMemoryEventColumns(db);
+  db.exec("CREATE INDEX IF NOT EXISTS idx_memory_events_timeline ON memory_events(chat_id, character, status, occurred_at, sequence);");
   ensureChatColumns(db);
   migrateMemorySummariesForCharacterIsolation(db, chatLevelSummaryKey);
 }
@@ -106,6 +139,14 @@ function ensureMemoryEventColumns(db: Database.Database): void {
     { name: "emotion", def: "TEXT" },
     { name: "importance", def: "INTEGER" },
     { name: "key_points_json", def: "TEXT" },
+    { name: "status", def: "TEXT NOT NULL DEFAULT 'pending'" },
+    { name: "event_type", def: "TEXT NOT NULL DEFAULT 'fact'" },
+    { name: "temporal_state", def: "TEXT NOT NULL DEFAULT 'active'" },
+    { name: "occurred_at", def: "INTEGER" },
+    { name: "recorded_at", def: "INTEGER" },
+    { name: "sequence", def: "INTEGER NOT NULL DEFAULT 0" },
+    { name: "supersedes_event_id", def: "TEXT" },
+    { name: "fact_key", def: "TEXT" },
   ];
 
   for (const column of required) {

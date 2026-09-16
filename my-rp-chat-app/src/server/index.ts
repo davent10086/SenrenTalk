@@ -188,6 +188,33 @@ async function main(): Promise<void> {
     response.json(api.listMessages(readParam(request.params.chatId)));
   });
 
+  app.get("/api/chats/:chatId/memories", (request, response) => {
+    response.json(api.getMemories(readParam(request.params.chatId)));
+  });
+  app.post("/api/chats/:chatId/memories/:memoryId/confirm", async (request, response) => {
+    const memory = await api.confirmMemory(readParam(request.params.chatId), readParam(request.params.memoryId));
+    if (!memory) throw Object.assign(new Error("Memory not found"), { statusCode: 404 });
+    response.json(memory);
+  });
+  app.post("/api/chats/:chatId/memories/:memoryId/dismiss", (request, response) => {
+    const memory = api.dismissMemory(readParam(request.params.chatId), readParam(request.params.memoryId));
+    if (!memory) throw Object.assign(new Error("Memory not found"), { statusCode: 404 });
+    response.json(memory);
+  });
+  app.delete("/api/chats/:chatId/memories/:memoryId", (request, response) => {
+    if (!api.deleteMemory(readParam(request.params.chatId), readParam(request.params.memoryId))) throw Object.assign(new Error("Memory not found"), { statusCode: 404 });
+    response.json({ ok: true });
+  });
+  app.post("/api/chats/:chatId/memories/core/:characterId/confirm", (request, response) => {
+    const core = api.confirmCoreMemory(readParam(request.params.chatId), readParam(request.params.characterId));
+    if (!core) throw Object.assign(new Error("Core memory candidate not found"), { statusCode: 404 });
+    response.json(core);
+  });
+  app.post("/api/chats/:chatId/memories/core/:characterId/dismiss", (request, response) => {
+    if (!api.dismissCoreMemory(readParam(request.params.chatId), readParam(request.params.characterId))) throw Object.assign(new Error("Core memory candidate not found"), { statusCode: 404 });
+    response.json({ ok: true });
+  });
+
   app.post("/api/chats", (request, response) => {
     const body = request.body as CreateChatRequest;
     const chat = api.createChat(

@@ -16,6 +16,8 @@ import type {
   GroupChatRoomConfig,
   GroupChatRoomState,
   PublicSettings,
+  ChatMemorySnapshot,
+  CoreMemory,
 } from "../common/types";
 import { AppRuntime } from "../backend/app-runtime";
 import { JobRegistry } from "../backend/job-registry";
@@ -97,6 +99,17 @@ export class ApiService {
   async deleteChat(chatId: string): Promise<void> {
     await this.runtime.deleteChat(chatId);
   }
+
+  getMemories(chatId: string): ChatMemorySnapshot {
+    if (!this.runtime.repository.getChat(chatId)) throw Object.assign(new Error("Chat not found"), { statusCode: 404 });
+    return this.runtime.memoryService.getSnapshot(chatId);
+  }
+
+  async confirmMemory(chatId: string, eventId: string) { return this.runtime.memoryService.confirmEvent(chatId, eventId); }
+  dismissMemory(chatId: string, eventId: string) { return this.runtime.memoryService.dismissEvent(chatId, eventId); }
+  deleteMemory(chatId: string, eventId: string) { return this.runtime.memoryService.deleteConfirmedEvent(chatId, eventId); }
+  confirmCoreMemory(chatId: string, characterId: string): CoreMemory | undefined { return this.runtime.memoryService.confirmCoreCandidate(chatId, characterId); }
+  dismissCoreMemory(chatId: string, characterId: string): boolean { return this.runtime.memoryService.dismissCoreCandidate(chatId, characterId); }
 
   async regenerateMessageAudio(messageId: string): Promise<ChatMessage> {
     return this.runtime.regenerateMessageAudio(messageId);

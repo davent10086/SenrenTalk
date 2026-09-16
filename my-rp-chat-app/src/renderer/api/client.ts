@@ -12,6 +12,7 @@ import type {
   ChatSendResult,
   UpdateGroupChatRoomRequest,
   PublicSettings,
+  ChatMemorySnapshot,
 } from "../../common/types";
 import type { PendingAttachmentDraft } from "../types";
 
@@ -94,6 +95,26 @@ export async function listMessages(chatId: string): Promise<ChatMessage[]> {
       headers: authHeaders(),
     }),
   );
+}
+
+export async function getMemories(chatId: string): Promise<ChatMemorySnapshot> {
+  return readJsonResponse<ChatMemorySnapshot>(await fetch(buildApiUrl(`/api/chats/${encodeURIComponent(chatId)}/memories`), { headers: authHeaders() }));
+}
+
+export async function confirmMemory(chatId: string, memoryId: string): Promise<void> {
+  await readJsonResponse(await fetch(buildApiUrl(`/api/chats/${encodeURIComponent(chatId)}/memories/${encodeURIComponent(memoryId)}/confirm`), { method: "POST", headers: authHeaders() }));
+}
+export async function dismissMemory(chatId: string, memoryId: string): Promise<void> {
+  await readJsonResponse(await fetch(buildApiUrl(`/api/chats/${encodeURIComponent(chatId)}/memories/${encodeURIComponent(memoryId)}/dismiss`), { method: "POST", headers: authHeaders() }));
+}
+export async function deleteMemory(chatId: string, memoryId: string): Promise<void> {
+  await readJsonResponse(await fetch(buildApiUrl(`/api/chats/${encodeURIComponent(chatId)}/memories/${encodeURIComponent(memoryId)}`), { method: "DELETE", headers: authHeaders() }));
+}
+export async function confirmCoreMemory(chatId: string, characterId: string): Promise<void> {
+  await readJsonResponse(await fetch(buildApiUrl(`/api/chats/${encodeURIComponent(chatId)}/memories/core/${encodeURIComponent(characterId)}/confirm`), { method: "POST", headers: authHeaders() }));
+}
+export async function dismissCoreMemory(chatId: string, characterId: string): Promise<void> {
+  await readJsonResponse(await fetch(buildApiUrl(`/api/chats/${encodeURIComponent(chatId)}/memories/core/${encodeURIComponent(characterId)}/dismiss`), { method: "POST", headers: authHeaders() }));
 }
 
 /**

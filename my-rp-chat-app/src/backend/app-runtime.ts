@@ -86,11 +86,17 @@ export class AppRuntime {
   /** 启动所有服务：初始化数据库、加载角色、启动 SSE 服务器、建立 ES 索引。 */
   async start(): Promise<void> {
     this.repository.init();
+    const legacyMemoryChats = this.repository.takeLegacyMemoryMigration();
     const characters = await this.characterService.loadCharacters();
     this.repository.upsertCharacters(characters);
     await this.sseService.start();
     if (this.elasticsearchService.enabled) {
-      await this.elasticsearchService.ensureMemoryIndex();
+      try { await this.elasticsearchService.ensureMemoryIndex(); }
+      catch (error) { console.warn("[AppRuntime] ES memory index unavailable; SQLite fallback remains active:", error); }
+      for (const chatId of legacyMemoryChats) {
+        try { await this.elasticsearchService.deleteMemoriesBySession(chatId); }
+        catch (error) { console.warn("[AppRuntime] legacy ES memory cleanup failed:", error); }
+      }
     }
   }
 
@@ -204,8 +210,8 @@ export class AppRuntime {
     if (!this.repository.getChat(chatId)) {
       throw Object.assign(new Error("Chat not found"), { statusCode: 404 });
     }
-    await this.elasticsearchService.deleteMemoriesBySession(chatId);
     this.repository.clearMessages(chatId);
+    try { await this.elasticsearchService.deleteMemoriesBySession(chatId); } catch (error) { console.warn("[AppRuntime] ES memory cleanup failed:", error); }
     await this.mediaManager.cleanupChatMedia(chatId);
   }
 
@@ -214,8 +220,8 @@ export class AppRuntime {
     if (!this.repository.getChat(chatId)) {
       throw Object.assign(new Error("Chat not found"), { statusCode: 404 });
     }
-    await this.elasticsearchService.deleteMemoriesBySession(chatId);
     this.repository.deleteChat(chatId);
+    try { await this.elasticsearchService.deleteMemoriesBySession(chatId); } catch (error) { console.warn("[AppRuntime] ES memory cleanup failed:", error); }
     await this.mediaManager.cleanupChatMedia(chatId);
   }
 
@@ -375,10 +381,11 @@ export class AppRuntime {
     const targetIndex = allMessages.findIndex((entry) => entry.id === messageId);
     const removedMessages = targetIndex >= 0 ? allMessages.slice(targetIndex + 1) : [];
 
+    const invalidatedSourceIds = [messageId, ...removedMessages.map((message) => message.id)];
     this.repository.updateMessageContent(messageId, normalizedContent);
     this.repository.truncateMessagesAfter(chat.id, messageId);
-    this.repository.clearMemories(chat.id);
-    await this.elasticsearchService.deleteMemoriesBySession(chat.id);
+    this.repository.invalidateMemoriesBySourceMessages(chat.id, invalidatedSourceIds);
+    try { await this.elasticsearchService.deleteMemoriesBySession(chat.id); } catch (error) { console.warn("[AppRuntime] ES memory cleanup failed:", error); }
     await this.cleanupMessagesMedia(removedMessages);
 
     return this.chatSessionService.launchGeneration(chat, {

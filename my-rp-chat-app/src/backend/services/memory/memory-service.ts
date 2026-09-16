@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { ChatMessage, CharacterProfile, CoreMemory, MemoryEvent, RetrievedDoc } from "../../../common/types";
+import type { ChatMemorySnapshot, ChatMessage, CharacterProfile, CoreMemory, CoreMemoryCandidate, MemoryEvent, RetrievedDoc } from "../../../common/types";
 import { ChatRepository } from "../../db/database";
 import { ElasticsearchService } from "../es/elasticsearch-service";
 import { LlmService } from "../llm/llm-service";
@@ -55,8 +55,8 @@ export class MemoryService {
     const recentMessages = messages.slice(-6);
     if (recentMessages.length < 2) {
       const fallback = recentMessages
-        .map((m) => `${m.role}${m.roleId ? `(${m.roleId})` : ""}: ${m.content}`)
-        .join("\n");
+        .map((m) => `${m.role}${m.roleId ? `(${m.roleId})` : ""}: ${m.content.slice(0, 180)}`)
+        .join("\n").slice(0, 1200);
       this.repository.saveSummary(chatId, fallback || "暂无摘要", character.id);
       return fallback || "暂无摘要";
     }
@@ -70,8 +70,9 @@ export class MemoryService {
           characterName: character.displayName,
           recentMessages: messageText,
         });
-        this.repository.saveSummary(chatId, summary, character.id);
-        return summary;
+        const bounded = summary.slice(0, 1200);
+        this.repository.saveSummary(chatId, bounded, character.id);
+        return bounded;
       } catch {
         // LLM 失败时降级到原始方式
       }
@@ -79,8 +80,8 @@ export class MemoryService {
 
     // Fallback: 保留原始方式
     const fallback = recentMessages
-      .map((m) => `${m.role}${m.roleId ? `(${m.roleId})` : ""}: ${m.content}`)
-      .join("\n");
+      .map((m) => `${m.role}${m.roleId ? `(${m.roleId})` : ""}: ${m.content.slice(0, 180)}`)
+      .join("\n").slice(0, 1200);
     this.repository.saveSummary(chatId, fallback || "暂无摘要", character.id);
     return fallback || "暂无摘要";
   }
@@ -100,19 +101,21 @@ export class MemoryService {
    * @returns 匹配的检索文档列表
    */
   async recall(chatId: string, query: string, characterId?: string): Promise<RetrievedDoc[]> {
-    const esResults = await this.elasticsearchService.searchMemories(query, {
-      sessionId: chatId,
-      character: characterId,
-      topK: 4,
-    });
+    let esResults: RetrievedDoc[] = [];
+    try {
+      esResults = await this.elasticsearchService.searchMemories(query, { sessionId: chatId, character: characterId, topK: 4 });
+    } catch (error) {
+      console.warn("[MemoryService] ES recall failed; using SQLite:", error);
+    }
     if (esResults.length > 0) {
       return esResults;
     }
     // ES 降级时返回 SQLite 记忆，按 character 过滤防止串角色
     // score 归一化到 0-1 范围（importance/10），与 ES 降级路径保持一致
     return this.repository
-      .listMemoryEvents(chatId, 6, characterId)
+      .listTimelineEvents(chatId, characterId, "confirmed")
       .filter((event) => !characterId || event.character === characterId)
+      .slice(-6).reverse()
       .map((event) => ({
         sourceId: event.id,
         recordType: "memory" as const,
@@ -149,27 +152,15 @@ export class MemoryService {
     }
     if (!latestUser || !latestAssistant) return null;
 
-    // 用 LLM 提炼情景记忆
-    let summary = `${character.displayName}记住：用户提到"${latestUser.content.slice(0, 80)}"，回复"${latestAssistant.content.slice(0, 80)}"`;
-    let emotion = "平静";
-    let importance = 3;
-    let keyPoints: string[] = [];
-
-    if (this.llmService) {
-      try {
-        const extraction = await this.llmService.extractEpisodicMemory({
-          characterName: character.displayName,
-          userInput: latestUser.content,
-          assistantOutput: latestAssistant.content,
-        });
-        summary = extraction.summary;
-        emotion = extraction.emotion;
-        importance = extraction.importance;
-        keyPoints = extraction.keyPoints;
-      } catch {
-        // LLM 失败时降级
-      }
-    }
+    if (!this.llmService) { await this.updateSummary(chatId, character, messages); return null; }
+    let extraction: Awaited<ReturnType<LlmService["extractEpisodicMemory"]>>;
+    try {
+      extraction = await this.llmService.extractEpisodicMemory({ characterName: character.displayName, userInput: latestUser.content, assistantOutput: latestAssistant.content });
+    } catch { await this.updateSummary(chatId, character, messages); return null; }
+    const importance = Math.max(1, Math.min(10, Math.round(extraction.importance)));
+    const summary = extraction.summary.trim().slice(0, 160);
+    const keyPoints = extraction.keyPoints.map((point) => point.trim().slice(0, 80)).filter(Boolean).slice(0, 5);
+    if (!extraction.shouldRemember || importance < 7 || !summary) { await this.updateSummary(chatId, character, messages); return null; }
 
     const event: MemoryEvent = {
       id: randomUUID(),
@@ -177,23 +168,20 @@ export class MemoryService {
       sessionId: chatId,
       character: character.id,
       summary,
-      emotion,
+      emotion: extraction.emotion.trim().slice(0, 40) || "平静",
       importance,
       keyPoints,
-      content: latestAssistant.content,
+      content: `${summary}\n${keyPoints.join("\n")}`.slice(0, 800),
       category: "interaction",
       timestamp: Date.now(),
-      tags: [character.id, "interaction", emotion],
+      tags: [character.id, "interaction", extraction.eventType],
       sourceMessageId: latestAssistant.id,
+      status: "pending", eventType: extraction.eventType, temporalState: extraction.temporalState,
+      occurredAt: extraction.occurredAt, recordedAt: latestUser.timestamp,
+      factKey: extraction.factKey?.trim().slice(0, 80),
     };
 
     this.repository.saveMemory(event);
-    try {
-      await this.elasticsearchService.indexMemory(event);
-    } catch (error) {
-      console.warn("[MemoryService] ES 情景记忆索引失败，已降级到 SQLite:", error);
-    }
-
     // 更新 L1 摘要
     await this.updateSummary(chatId, character, messages);
 
@@ -225,12 +213,15 @@ export class MemoryService {
   ): Promise<CoreMemory | null> {
     if (!this.llmService) return null;
 
-    // 取出该角色最近的情景记忆（按 character 过滤，避免群聊下跨角色污染）
-    const recentEvents = this.repository.listMemoryEvents(chatId, CORE_MEMORY_CONSOLIDATION_INTERVAL, character.id);
-    if (recentEvents.length < 2) return null;
+    if (this.repository.getCoreCandidate(chatId, character.id)) return null;
+    const cursor = this.repository.getConsolidationSequence(chatId, character.id);
+    const nextBatch = this.repository.listTimelineEvents(chatId, character.id, "confirmed")
+      .filter((event) => (event.sequence ?? 0) > cursor).sort((a, b) => (a.sequence ?? 0) - (b.sequence ?? 0)).slice(0, CORE_MEMORY_CONSOLIDATION_INTERVAL);
+    const recentEvents = [...nextBatch].sort((a, b) => (a.occurredAt ?? a.recordedAt ?? a.timestamp) - (b.occurredAt ?? b.recordedAt ?? b.timestamp) || (a.sequence ?? 0) - (b.sequence ?? 0));
+    if (recentEvents.length < CORE_MEMORY_CONSOLIDATION_INTERVAL) return null;
 
     const currentCore = this.repository.getCoreMemory(chatId, character.id);
-    const memoriesText = recentEvents.map((e) => e.summary || e.content);
+    const memoriesText = recentEvents.map((e) => (e.summary || e.content).slice(0, 240));
 
     try {
       const result = await this.llmService.consolidateCoreMemory({
@@ -245,24 +236,57 @@ export class MemoryService {
         id: currentCore?.id ?? randomUUID(),
         chatId,
         character: character.id,
-        userPreferences: [...new Set([...(currentCore?.userPreferences ?? []), ...result.userPreferences])],
-        userTraits: [...new Set([...(currentCore?.userTraits ?? []), ...result.userTraits])],
+        userPreferences: [...new Set(result.userPreferences)].slice(0, 12),
+        userTraits: [...new Set(result.userTraits)].slice(0, 12),
         relationshipStage: result.relationshipStage || (currentCore?.relationshipStage ?? ""),
-        relationshipNotes: [...new Set([...(currentCore?.relationshipNotes ?? []), ...result.relationshipNotes])],
-        keyFacts: [...new Set([...(currentCore?.keyFacts ?? []), ...result.keyFacts])],
+        relationshipNotes: [...new Set(result.relationshipNotes)].slice(0, 12),
+        keyFacts: [...new Set(result.keyFacts)].slice(0, 16),
         lastUpdated: Date.now(),
       };
 
-      this.repository.saveCoreMemory(core);
-      try {
-        await this.elasticsearchService.indexCoreMemory(core);
-      } catch (error) {
-        console.warn("[MemoryService] ES 核心记忆索引失败:", error);
-      }
-
+      const candidate: CoreMemoryCandidate = { id: randomUUID(), chatId, character: character.id, core, sourceSequence: Math.max(...recentEvents.map((event) => event.sequence ?? cursor)), createdAt: Date.now() };
+      this.repository.saveCoreCandidate(candidate);
       return core;
     } catch {
       return currentCore ?? null;
     }
+  }
+
+  getSnapshot(chatId: string): ChatMemorySnapshot {
+    return { events: this.repository.listTimelineEvents(chatId), coreMemories: this.repository.listCoreMemories(chatId), coreCandidates: this.repository.listCoreCandidates(chatId) };
+  }
+
+  async confirmEvent(chatId: string, eventId: string): Promise<MemoryEvent | undefined> {
+    const previous = this.repository.getMemoryEvent(chatId, eventId);
+    const event = this.repository.updateMemoryStatus(chatId, eventId, "confirmed");
+    if (!event) return undefined;
+    if (previous?.status === "confirmed") return event;
+    this.repository.supersedeConflictingFacts(event);
+    try { await this.elasticsearchService.indexMemory(event); } catch (error) { console.warn("[MemoryService] confirmed event ES index failed:", error); }
+    const character = this.repository.getCharacter(event.character);
+    if (character) await this.consolidateCoreMemory(chatId, character);
+    return event;
+  }
+
+  dismissEvent(chatId: string, eventId: string): MemoryEvent | undefined {
+    return this.repository.updateMemoryStatus(chatId, eventId, "dismissed");
+  }
+
+  deleteConfirmedEvent(chatId: string, eventId: string): boolean {
+    const event = this.repository.listTimelineEvents(chatId).find((item) => item.id === eventId && item.status === "confirmed");
+    if (!event) return false;
+    this.repository.deleteMemoryEvent(eventId); void this.elasticsearchService.deleteMemory(eventId).catch(() => undefined); return true;
+  }
+
+  confirmCoreCandidate(chatId: string, characterId: string): CoreMemory | undefined {
+    const candidate = this.repository.getCoreCandidate(chatId, characterId);
+    if (!candidate || candidate.chatId !== chatId) return undefined;
+    this.repository.saveCoreMemory(candidate.core); this.repository.setConsolidationSequence(chatId, characterId, candidate.sourceSequence); this.repository.deleteCoreCandidate(chatId, characterId);
+    return candidate.core;
+  }
+
+  dismissCoreCandidate(chatId: string, characterId: string): boolean {
+    const candidate = this.repository.getCoreCandidate(chatId, characterId); if (!candidate || candidate.chatId !== chatId) return false;
+    this.repository.setConsolidationSequence(chatId, characterId, candidate.sourceSequence); this.repository.deleteCoreCandidate(chatId, characterId); return true;
   }
 }

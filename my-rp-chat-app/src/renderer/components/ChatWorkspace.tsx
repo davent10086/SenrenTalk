@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Square, Trash2, XCircle } from "lucide-react";
+import { Brain, Check, Square, Trash2, XCircle } from "lucide-react";
 import type {
   ChatMessage,
   ChatRecord,
@@ -7,6 +7,7 @@ import type {
   GroupChatRoomMode,
   GroupChatRoomState,
   GroupChatSkipReason,
+  ChatMemorySnapshot,
 } from "../../common/types";
 import * as apiClient from "../api/client";
 import type { PendingAttachmentDraft } from "../types";
@@ -46,6 +47,17 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
   const [retryingAudioIds, setRetryingAudioIds] = useState<Record<string, boolean>>({});
   const [attachmentDrafts, setAttachmentDrafts] = useState<PendingAttachmentDraft[]>([]);
   const [mediaUrls, setMediaUrls] = useState<Record<string, string>>({});
+  const [memoryOpen, setMemoryOpen] = useState(false);
+  const [memories, setMemories] = useState<ChatMemorySnapshot | null>(null);
+  const [memoryError, setMemoryError] = useState<string | null>(null);
+
+  const refreshMemories = async () => {
+    if (!props.chat) return;
+    try { setMemories(await apiClient.getMemories(props.chat.id)); setMemoryError(null); }
+    catch (error) { setMemoryError(error instanceof Error ? error.message : "读取记忆失败"); }
+  };
+
+  useEffect(() => { if (memoryOpen) void refreshMemories(); }, [memoryOpen, props.chat?.id]);
 
   const mediaPaths = useMemo(() => {
     const paths = new Set<string>();
@@ -118,6 +130,11 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: "16px" }}>
           {props.headerExtra}
+          {props.chat ? (
+            <button title="记忆" onClick={() => setMemoryOpen((value) => !value)} className="icon-button">
+              <Brain size={18} />
+            </button>
+          ) : null}
           {props.activeRoleId ? (
             <span className="badge playable">
               <span className="animate-pulse mr-2 h-2 w-2 rounded-full bg-green-400 inline-block"></span>
@@ -141,6 +158,41 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
           ) : null}
         </div>
       </div>
+
+      {memoryOpen && props.chat ? (
+        <aside style={{ margin: "0 0 12px", padding: "12px", border: "1px solid var(--theme-border, #ddd)", borderRadius: "10px", maxHeight: "280px", overflow: "auto" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}><strong>记忆时间线</strong><button className="icon-button" onClick={() => void refreshMemories()} title="刷新"><Check size={16} /></button></div>
+          {memoryError ? <p className="error-text">{memoryError}</p> : null}
+          {memories?.coreMemories.map((core) => (
+            <div key={core.id} style={{ marginTop: "8px", padding: "8px", background: "rgba(80,180,120,.10)", borderRadius: "6px" }}>
+              <small>{core.character} 的当前核心记忆</small>
+              <div>{[core.relationshipStage, ...core.keyFacts].filter(Boolean).join("；") || "暂无有效事实"}</div>
+            </div>
+          ))}
+          {memories?.events.filter((event) => event.status === "pending").map((event) => (
+            <div key={event.id} style={{ marginTop: "8px", padding: "8px", background: "rgba(250,180,60,.12)", borderRadius: "6px" }}>
+              <small>待确认 · {event.eventType} · {event.occurredAt ? new Date(event.occurredAt).toLocaleString() : `于 ${new Date(event.recordedAt ?? event.timestamp).toLocaleString()} 提及`}</small>
+              <div>{event.summary}</div>
+              <button onClick={async () => { await apiClient.confirmMemory(props.chat!.id, event.id); await refreshMemories(); }}>确认</button>{" "}
+              <button onClick={async () => { await apiClient.dismissMemory(props.chat!.id, event.id); await refreshMemories(); }}>忽略</button>
+            </div>
+          ))}
+          {memories?.coreCandidates.map((candidate) => (
+            <div key={candidate.id} style={{ marginTop: "8px", padding: "8px", background: "rgba(100,160,255,.12)", borderRadius: "6px" }}>
+              <small>{candidate.character} 的核心记忆候选</small><div>{candidate.core.keyFacts.join("；") || candidate.core.relationshipStage}</div>
+              <button onClick={async () => { await apiClient.confirmCoreMemory(props.chat!.id, candidate.character); await refreshMemories(); }}>确认</button>{" "}
+              <button onClick={async () => { await apiClient.dismissCoreMemory(props.chat!.id, candidate.character); await refreshMemories(); }}>忽略</button>
+            </div>
+          ))}
+          {memories?.events.filter((event) => event.status === "confirmed").map((event) => (
+            <div key={event.id} style={{ marginTop: "8px", borderTop: "1px solid var(--theme-border, #ddd)", paddingTop: "7px" }}>
+              <small>{event.temporalState} · {event.occurredAt ? new Date(event.occurredAt).toLocaleDateString() : `于 ${new Date(event.recordedAt ?? event.timestamp).toLocaleDateString()} 提及`}</small>
+              <div>{event.summary}</div><button onClick={async () => { await apiClient.deleteMemory(props.chat!.id, event.id); await refreshMemories(); }}>删除</button>
+            </div>
+          ))}
+          {memories && memories.events.length === 0 && memories.coreCandidates.length === 0 ? <p className="muted">暂无可管理的记忆。</p> : null}
+        </aside>
+      ) : null}
 
       <MessageList
         messages={props.messages}

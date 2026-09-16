@@ -137,6 +137,10 @@ function buildFilters(filters: RetrievalFilters, isMemory = false): Array<Record
   if (isMemory && filters.sessionId) {
     clauses.push({ term: { session_id: filters.sessionId } });
   }
+  if (isMemory) {
+    clauses.push({ term: { record_type: "memory" } });
+    clauses.push({ term: { status: "confirmed" } });
+  }
   if (isMemory && filters.category) {
     clauses.push({ term: { category: filters.category } });
   }
@@ -285,6 +289,7 @@ export class ElasticsearchService {
             properties: {
               source_id: { type: "keyword" },
               record_type: { type: "keyword" },
+              status: { type: "keyword" },
               session_id: { type: "keyword" },
               character: { type: "keyword" },
               content: { type: "text" },
@@ -477,10 +482,11 @@ export class ElasticsearchService {
     await this.client.index({
       index: this.config.esMemoryIndex,
       id: event.id,
-      refresh: true,
+      refresh: "wait_for",
       document: {
         source_id: event.id,
         record_type: "memory",
+        status: event.status ?? "confirmed",
         session_id: event.sessionId,
         character: event.character,
         content: event.content,
@@ -510,6 +516,12 @@ export class ElasticsearchService {
         },
       },
     });
+  }
+
+  async deleteMemory(id: string): Promise<void> {
+    if (!this.client) return;
+    await this.ensureMemoryIndex();
+    await this.client.delete({ index: this.config.esMemoryIndex, id, refresh: "wait_for" });
   }
 
   /**
@@ -547,10 +559,13 @@ export class ElasticsearchService {
   ): Promise<RetrievedDoc[]> {
     const queryVector = precomputedQueryVector ?? await this.tryEmbed(query, isMemory ? "memory-search" : "dialogue-search");
 
-    const [denseResults, bm25Results] = await Promise.all([
+    const [dense, bm25] = await Promise.allSettled([
       this.runDenseQuery(index, queryVector, topK, filterClauses, isMemory),
       this.runBm25Query(index, query, topK, bm25Fields, filterClauses, isMemory),
     ]);
+
+    const denseResults = dense.status === "fulfilled" ? dense.value : [];
+    const bm25Results = bm25.status === "fulfilled" ? bm25.value : [];
 
     return rrfFuse([denseResults, bm25Results], topK * 2);
   }

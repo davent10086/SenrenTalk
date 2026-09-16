@@ -308,7 +308,7 @@ export class LlmService {
     return normalized.length > 0 ? normalized : undefined;
   }
 
-  async extractEpisodicMemory(input: { characterName: string; userInput: string; assistantOutput: string }): Promise<{ summary: string; emotion: string; importance: number; keyPoints: string[] }> {
+  async extractEpisodicMemory(input: { characterName: string; userInput: string; assistantOutput: string }): Promise<{ summary: string; emotion: string; importance: number; keyPoints: string[]; shouldRemember: boolean; eventType: "fact" | "state" | "plan"; temporalState: "past" | "active" | "planned"; occurredAt?: number; factKey?: string }> {
     const response = await this.client.chat.completions.create({
       model: this.config.llmModel,
       temperature: 0.3,
@@ -318,7 +318,7 @@ export class LlmService {
           content: [
             `你是记忆分析师，负责从角色扮演对话中提取情景记忆。角色名：${input.characterName}`,
             `请严格输出以下 JSON 格式：`,
-            `{"summary": "一句话概括这次交互的核心内容（不超过100字）", "emotion": "角色在这轮对话中的情绪标签（如：开心、悲伤、愤怒、平静、害羞等）", "importance": 数字1-10表示这段记忆的重要性, "keyPoints": ["关键信息点1", "关键信息点2"]}`,
+            `{"summary": "一句话概括这次交互的核心内容（不超过100字）", "emotion": "情绪", "importance": 数字1-10, "keyPoints": ["要点"], "shouldRemember": true, "eventType": "fact|state|plan", "temporalState": "past|active|planned", "occurredAt": 可选的Unix毫秒时间戳, "factKey": "可选稳定事实键"}`,
             `注意：只输出 JSON，不要加任何额外解释或 Markdown 标记。`,
           ].join("\n"),
         },
@@ -331,7 +331,7 @@ export class LlmService {
       const start = cleaned.indexOf("{");
       const end = cleaned.lastIndexOf("}");
       if (start < 0 || end <= start) {
-        return { summary: input.assistantOutput.slice(0, 100), emotion: "平静", importance: 3, keyPoints: [] };
+        return { summary: input.assistantOutput.slice(0, 100), emotion: "平静", importance: 3, keyPoints: [], shouldRemember: false, eventType: "fact", temporalState: "active" };
       }
       const parsed = JSON.parse(cleaned.slice(start, end + 1)) as Record<string, unknown>;
       return {
@@ -339,9 +339,14 @@ export class LlmService {
         emotion: typeof parsed.emotion === "string" ? parsed.emotion : "平静",
         importance: typeof parsed.importance === "number" ? parsed.importance : 3,
         keyPoints: Array.isArray(parsed.keyPoints) ? parsed.keyPoints.filter((v): v is string => typeof v === "string") : [],
+        shouldRemember: parsed.shouldRemember === true,
+        eventType: parsed.eventType === "state" || parsed.eventType === "plan" ? parsed.eventType : "fact",
+        temporalState: parsed.temporalState === "past" || parsed.temporalState === "planned" ? parsed.temporalState : "active",
+        occurredAt: typeof parsed.occurredAt === "number" && Number.isFinite(parsed.occurredAt) ? parsed.occurredAt : undefined,
+        factKey: typeof parsed.factKey === "string" ? parsed.factKey : undefined,
       };
     } catch {
-      return { summary: input.assistantOutput.slice(0, 100), emotion: "平静", importance: 3, keyPoints: [] };
+      return { summary: input.assistantOutput.slice(0, 100), emotion: "平静", importance: 3, keyPoints: [], shouldRemember: false, eventType: "fact", temporalState: "active" };
     }
   }
 
