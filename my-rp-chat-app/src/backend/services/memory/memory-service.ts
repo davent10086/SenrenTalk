@@ -115,6 +115,7 @@ export class MemoryService {
     return this.repository
       .listTimelineEvents(chatId, characterId, "confirmed")
       .filter((event) => !characterId || event.character === characterId)
+      .filter((event) => event.temporalState !== "superseded" && event.temporalState !== "cancelled")
       .slice(-6).reverse()
       .map((event) => ({
         sourceId: event.id,
@@ -216,6 +217,7 @@ export class MemoryService {
     if (this.repository.getCoreCandidate(chatId, character.id)) return null;
     const cursor = this.repository.getConsolidationSequence(chatId, character.id);
     const nextBatch = this.repository.listTimelineEvents(chatId, character.id, "confirmed")
+      .filter((event) => event.temporalState !== "superseded" && event.temporalState !== "cancelled")
       .filter((event) => (event.sequence ?? 0) > cursor).sort((a, b) => (a.sequence ?? 0) - (b.sequence ?? 0)).slice(0, CORE_MEMORY_CONSOLIDATION_INTERVAL);
     const recentEvents = [...nextBatch].sort((a, b) => (a.occurredAt ?? a.recordedAt ?? a.timestamp) - (b.occurredAt ?? b.recordedAt ?? b.timestamp) || (a.sequence ?? 0) - (b.sequence ?? 0));
     if (recentEvents.length < CORE_MEMORY_CONSOLIDATION_INTERVAL) return null;
@@ -261,7 +263,14 @@ export class MemoryService {
     const event = this.repository.updateMemoryStatus(chatId, eventId, "confirmed");
     if (!event) return undefined;
     if (previous?.status === "confirmed") return event;
-    this.repository.supersedeConflictingFacts(event);
+    const supersededIds = this.repository.supersedeConflictingFacts(event);
+    await Promise.all(supersededIds.map(async (id) => {
+      try {
+        await this.elasticsearchService.deleteMemory(id);
+      } catch (error) {
+        console.warn("[MemoryService] superseded event ES cleanup failed:", error);
+      }
+    }));
     try { await this.elasticsearchService.indexMemory(event); } catch (error) { console.warn("[MemoryService] confirmed event ES index failed:", error); }
     const character = this.repository.getCharacter(event.character);
     if (character) await this.consolidateCoreMemory(chatId, character);

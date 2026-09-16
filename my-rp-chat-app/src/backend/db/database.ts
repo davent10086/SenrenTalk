@@ -749,11 +749,15 @@ export class ChatRepository {
     return this.listTimelineEventsById(id);
   }
 
-  supersedeConflictingFacts(event: MemoryEvent): void {
-    if (!event.factKey) return;
+  supersedeConflictingFacts(event: MemoryEvent): string[] {
+    if (!event.factKey) return [];
+    const supersededIds = this.db.prepare(`SELECT id FROM memory_events
+      WHERE chat_id = ? AND character = ? AND fact_key = ? AND id != ? AND status = 'confirmed' AND temporal_state = 'active'`)
+      .all(event.chatId, event.character, event.factKey, event.id) as Array<{ id: string }>;
     this.db.prepare(`UPDATE memory_events SET temporal_state = 'superseded', supersedes_event_id = ?
       WHERE chat_id = ? AND character = ? AND fact_key = ? AND id != ? AND status = 'confirmed' AND temporal_state = 'active'`)
       .run(event.id, event.chatId, event.character, event.factKey, event.id);
+    return supersededIds.map(({ id }) => id);
   }
 
   private listTimelineEventsById(id: string): MemoryEvent | undefined {

@@ -303,9 +303,12 @@ describe("MemoryService", () => {
     const character = createCharacter("芳乃"); repository.upsertCharacters([character]); const chat = repository.createChat("single", [character.id], "单聊");
     repository.saveMemory(createMemoryEvent(chat.id, character.id, { id: "old", status: "confirmed", factKey: "favorite", temporalState: "active" }));
     repository.saveMemory(createMemoryEvent(chat.id, character.id, { id: "new", status: "pending", factKey: "favorite", temporalState: "active" }));
-    const service = new MemoryService(repository, { searchMemories: vi.fn(), indexMemory: vi.fn() } as never);
+    const deleteMemory = vi.fn().mockResolvedValue(undefined);
+    const service = new MemoryService(repository, { searchMemories: vi.fn().mockResolvedValue([]), indexMemory: vi.fn(), deleteMemory } as never);
     await service.confirmEvent(chat.id, "new");
     expect(repository.listTimelineEvents(chat.id).find((event) => event.id === "old")?.temporalState).toBe("superseded");
+    expect(deleteMemory).toHaveBeenCalledWith("old");
+    expect((await service.recall(chat.id, "favorite", character.id)).map((entry) => entry.sourceId)).toEqual(["new"]);
     repository.close();
   });
 
