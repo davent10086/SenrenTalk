@@ -301,13 +301,22 @@ export interface StreamTokenPayload {
   type: "token";
   streamId: string;
   roleId?: string | null;
+  attemptId?: string;
   token: string;
+}
+
+export interface StreamDraftResetPayload {
+  type: "draft_reset";
+  streamId: string;
+  roleId?: string | null;
+  attemptId: string;
 }
 
 export interface StreamDonePayload {
   type: "message_done";
   streamId: string;
   roleId?: string | null;
+  attemptId?: string;
   messageId?: string;
   content: string;
 }
@@ -390,6 +399,7 @@ export interface StreamRoleSkippedPayload {
 
 export type StreamEvent =
   | StreamTokenPayload
+  | StreamDraftResetPayload
   | StreamDonePayload
   | StreamErrorPayload
   | StreamAudioReadyPayload

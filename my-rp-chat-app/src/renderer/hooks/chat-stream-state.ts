@@ -27,6 +27,7 @@ type ChatStreamAction =
   | { type: "room_finished"; reason: string }
   | { type: "status"; roleId: string; message: string; activeRoleId: string | null }
   | { type: "token"; roleId: string; token: string; activeRoleId: string | null }
+  | { type: "draft_reset"; roleId: string }
   | { type: "complete"; roleId: string };
 
 export const initialChatStreamState: ChatStreamState = {
@@ -59,6 +60,8 @@ export function reduceChatStreamState(
         ...state,
         isStreaming: false,
         activeRoleId: null,
+        drafts: {},
+        agentStatus: {},
       };
     case "reset":
       return initialChatStreamState;
@@ -93,12 +96,16 @@ export function reduceChatStreamState(
       return {
         ...state,
         skippedRoles: [...state.skippedRoles, action],
+        drafts: Object.fromEntries(Object.entries(state.drafts).filter(([roleId]) => roleId !== action.roleId)),
+        agentStatus: Object.fromEntries(Object.entries(state.agentStatus).filter(([roleId]) => roleId !== action.roleId)),
       };
     case "room_finished":
       return {
         ...state,
         plannedSpeakers: [],
         finishedReason: action.reason,
+        drafts: {},
+        agentStatus: {},
       };
     case "status":
       return {
@@ -120,6 +127,11 @@ export function reduceChatStreamState(
           ...state.drafts,
           [action.roleId]: `${state.drafts[action.roleId] ?? ""}${action.token}`,
         },
+      };
+    case "draft_reset":
+      return {
+        ...state,
+        drafts: { ...state.drafts, [action.roleId]: "" },
       };
     case "complete": {
       const nextDrafts = { ...state.drafts };

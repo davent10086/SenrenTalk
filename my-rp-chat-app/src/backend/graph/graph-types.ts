@@ -133,6 +133,14 @@ export const ChatState = Annotation.Root({
     reducer: (_left, right) => right,
     default: () => undefined,
   }),
+  attemptId: Annotation<string | undefined>({
+    reducer: (_left, right) => right,
+    default: () => undefined,
+  }),
+  pendingMessage: Annotation<ChatMessage | undefined>({
+    reducer: (_left, right) => right,
+    default: () => undefined,
+  }),
 });
 
 export type ChatGraphState = typeof ChatState.State;
@@ -148,6 +156,7 @@ export interface GraphDependencies {
   readImageAsBase64?: (relativePath: string) => Promise<ImageInput | null>;
   trackAsyncJob?: (job: Promise<unknown>) => void;
   abortSignal?: AbortSignal;
+  deferGroupSave?: boolean;
 }
 
 export function ensureNotAborted(signal?: AbortSignal): void {

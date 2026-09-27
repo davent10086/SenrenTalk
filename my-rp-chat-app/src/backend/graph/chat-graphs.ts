@@ -787,6 +787,10 @@ async function callLlmStreamNode(state: ChatGraphState, deps: GraphDependencies)
     images,
     deps,
   );
+  const attemptId = randomUUID();
+  deps.sseService.publish({
+    type: "draft_reset", streamId: state.streamId, roleId: character.id, attemptId,
+  });
   const result = await deps.llmService.streamStructuredCompletion({
     systemPrompt: state.prompt,
     userPrompt: buildUserPrompt(
@@ -823,6 +827,7 @@ async function callLlmStreamNode(state: ChatGraphState, deps: GraphDependencies)
         type: "token",
         streamId: state.streamId,
         roleId: character.id,
+        attemptId,
         token,
       });
     },
@@ -836,14 +841,14 @@ async function callLlmStreamNode(state: ChatGraphState, deps: GraphDependencies)
       node: "call_llm_stream",
       message: "选择保持沉默",
     });
-    // 发送空 message_done 清理前端草稿，避免跳过后草稿残留
-    deps.sseService.publish({
-      type: "message_done",
-      streamId: state.streamId,
-      roleId: character.id,
-      content: "",
-    });
+    if (!deps.deferGroupSave) {
+      deps.sseService.publish({
+        type: "message_done", streamId: state.streamId,
+        roleId: character.id, attemptId, content: "",
+      });
+    }
     return {
+      attemptId,
       output: "",
       speechTextJa: "",
       skip: true,
@@ -852,6 +857,7 @@ async function callLlmStreamNode(state: ChatGraphState, deps: GraphDependencies)
   }
 
   return {
+    attemptId,
     output: result.content,
     speechTextJa: result.speechTextJa,
     nextSpeaker: result.nextSpeaker,
@@ -905,6 +911,14 @@ async function saveMessageNode(state: ChatGraphState, deps: GraphDependencies) {
   if (pendingAudio) {
     metadata.audio = pendingAudio;
   }
+  if (deps.deferGroupSave && state.mode === "group") {
+    return {
+      pendingMessage: {
+        id: randomUUID(), chatId: state.chatId, role: "assistant" as const,
+        roleId: character.id, content: state.output, timestamp: Date.now(), metadata,
+      },
+    };
+  }
   const message = deps.repository.appendMessage({
     id: randomUUID(),
     chatId: state.chatId,
@@ -917,6 +931,7 @@ async function saveMessageNode(state: ChatGraphState, deps: GraphDependencies) {
     type: "message_done",
     streamId: state.streamId,
     roleId: character.id,
+    attemptId: state.attemptId,
     messageId: message.id,
     content: message.content,
   });
@@ -924,6 +939,28 @@ async function saveMessageNode(state: ChatGraphState, deps: GraphDependencies) {
   return {
     messages: [...state.messages, message],
   };
+}
+
+/** Commit a validated group reply once, after coordinator deduplication. */
+export function commitGroupMessage(
+  deps: GraphDependencies,
+  candidate: ChatMessage,
+  streamId: string,
+  attemptId: string | undefined,
+): ChatMessage {
+  ensureNotAborted(deps.abortSignal);
+  const character = candidate.roleId ? deps.repository.getCharacter(candidate.roleId) : undefined;
+  if (!character) throw new Error("群聊角色不存在，无法保存回复");
+  const message = deps.repository.appendMessage(candidate);
+  deps.sseService.publish({
+    type: "message_done", streamId, roleId: character.id,
+    attemptId, messageId: message.id, content: message.content,
+  });
+  scheduleAssistantAudio(
+    deps, message.id, message.chatId, character, message.content,
+    message.metadata ?? {}, streamId,
+  );
+  return message;
 }
 
 /** 将节点函数绑定到 deps，使其签名匹配 LangGraph 节点要求。 */

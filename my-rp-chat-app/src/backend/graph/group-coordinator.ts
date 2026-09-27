@@ -9,7 +9,7 @@ import {
   type GroupChatRoomConfig,
   type GroupChatSkipReason,
 } from "../../common/types";
-import { createSingleChatGraph } from "./chat-graphs";
+import { commitGroupMessage, createSingleChatGraph } from "./chat-graphs";
 import type { ChatGraphState, GraphDependencies } from "./graph-types";
 
 const DEFAULT_IDLE_STREAK_THRESHOLD = 2;
@@ -80,7 +80,7 @@ export class GroupChatCoordinator {
   private getOrCreateAgent(roleId: string): ReturnType<typeof createSingleChatGraph> {
     let agent = this.agents.get(roleId);
     if (!agent) {
-      agent = createSingleChatGraph(this.deps);
+      agent = createSingleChatGraph({ ...this.deps, deferGroupSave: !this.legacyCompatibility });
       this.agents.set(roleId, agent);
     }
     return agent;
@@ -213,6 +213,8 @@ export class GroupChatCoordinator {
     generationReason: GroupChatGenerationReason;
   }): Promise<{
     messages: ChatMessage[];
+    pendingMessage?: ChatMessage;
+    attemptId?: string;
     nextSpeaker?: string;
     skip?: boolean;
     skipReason?: GroupChatSkipReason;
@@ -272,6 +274,8 @@ export class GroupChatCoordinator {
       generationReason,
       skipReason: undefined,
       antiRepeatInstruction,
+      attemptId: undefined,
+      pendingMessage: undefined,
     };
 
     const config: Record<string, unknown> = { recursionLimit: 100 };
@@ -282,6 +286,8 @@ export class GroupChatCoordinator {
     const result = await this.getOrCreateAgent(roleId).invoke(state, config);
     return {
       messages: result.messages,
+      pendingMessage: result.pendingMessage,
+      attemptId: result.attemptId,
       nextSpeaker: result.nextSpeaker as string | undefined,
       skip: result.skip as boolean | undefined,
       skipReason: result.skipReason as GroupChatSkipReason | undefined,
@@ -579,27 +585,25 @@ export class GroupChatCoordinator {
             round, turnIndex, tracer, generationReason,
             closingTurn: isClosing,
           });
-          let latestMessage = result.messages.at(-1);
-          if (!result.skip && latestMessage?.role === "assistant" && latestMessage.roleId === speaker &&
+          let latestMessage = result.pendingMessage;
+          if (!result.skip && latestMessage &&
             isSimilarToPrevious(previousSameRole?.content, latestMessage.content)) {
-            this.deps.repository.deleteMessage(latestMessage.id);
             result = await this.runAgentTurn({
               roleId: speaker, participants, sharedHistory, chatId, streamId, targetRoleId,
               round, turnIndex, tracer, generationReason: "retry_rewrite",
               closingTurn: isClosing,
               antiRepeatInstruction: "不要重复你刚刚说过的内容，请补充新信息或换一个角度回应。",
             });
-            latestMessage = result.messages.at(-1);
+            latestMessage = result.pendingMessage;
           }
-          if (!result.skip && latestMessage?.role === "assistant" && latestMessage.roleId === speaker &&
+          if (!result.skip && latestMessage &&
             isSimilarToPrevious(previousSameRole?.content, latestMessage.content)) {
-            this.deps.repository.deleteMessage(latestMessage.id);
             result = { messages: sharedHistory, skip: true, skipReason: "similar_to_last" };
             this.publishRoleSkipped(streamId, speaker, round, "similar_to_last",
               `${speaker} 没有新的信息可补充，本轮保持沉默。`);
           }
           if (!result.skip && (!latestMessage || latestMessage.role !== "assistant" ||
-            latestMessage.roleId !== speaker || latestMessage.id === sharedHistory.at(-1)?.id)) {
+            latestMessage.roleId !== speaker)) {
             result = { messages: sharedHistory, skip: true, skipReason: "no_new_value" };
           }
 
@@ -612,7 +616,8 @@ export class GroupChatCoordinator {
             }
             if (isClosing) finishReason = "主持人没有新的收尾内容";
           } else {
-            sharedHistory = result.messages;
+            const committed = commitGroupMessage(this.deps, latestMessage!, streamId, result.attemptId);
+            sharedHistory = [...sharedHistory, committed];
             generatedCount += 1;
             roundSpeakers.push(speaker);
             if (roomConfig.mode === "host_mode" && speaker !== roomConfig.hostRoleId) guestMessageCount += 1;

@@ -47,7 +47,8 @@ export function useChatStream(options: UseChatStreamOptions) {
     await new Promise<void>((resolve) => {
       const source = new EventSource(stream.streamUrl);
       let settled = false;
-      const completedRoles = new Set<string>();
+      const activeAttempts = new Map<string, string>();
+      const completedAttempts = new Set<string>();
 
       const clearActiveStream = () => {
         if (activeStreamRef.current?.jobId === stream.jobId) {
@@ -125,8 +126,18 @@ export function useChatStream(options: UseChatStreamOptions) {
         });
       });
 
+      source.addEventListener("draft_reset", (event) => {
+        const payload = safeParse<{ roleId?: string | null; attemptId: string }>(
+          (event as MessageEvent<string>).data,
+        );
+        if (!payload?.attemptId) return;
+        const roleId = payload.roleId ?? "__default__";
+        activeAttempts.set(roleId, payload.attemptId);
+        dispatch({ type: "draft_reset", roleId });
+      });
+
       source.addEventListener("token", (event) => {
-        const payload = safeParse<{ roleId?: string | null; token: string }>(
+        const payload = safeParse<{ roleId?: string | null; attemptId: string; token: string }>(
           (event as MessageEvent<string>).data,
         );
         if (!payload) {
@@ -134,7 +145,8 @@ export function useChatStream(options: UseChatStreamOptions) {
         }
 
         const roleId = payload.roleId ?? "__default__";
-        if (completedRoles.has(roleId)) {
+        if (!payload.attemptId || activeAttempts.get(roleId) !== payload.attemptId ||
+          completedAttempts.has(payload.attemptId)) {
           return;
         }
 
@@ -147,7 +159,7 @@ export function useChatStream(options: UseChatStreamOptions) {
       });
 
       source.addEventListener("message_done", async (event) => {
-        const payload = safeParse<{ roleId?: string | null }>(
+        const payload = safeParse<{ roleId?: string | null; attemptId?: string }>(
           (event as MessageEvent<string>).data,
         );
         if (!payload) {
@@ -155,7 +167,9 @@ export function useChatStream(options: UseChatStreamOptions) {
         }
 
         const roleId = payload.roleId ?? "__default__";
-        completedRoles.add(roleId);
+        if (payload.attemptId && activeAttempts.get(roleId) !== payload.attemptId) return;
+        if (payload.attemptId) completedAttempts.add(payload.attemptId);
+        activeAttempts.delete(roleId);
         dispatch({ type: "complete", roleId });
         await options.onMessagesChanged();
       });
@@ -211,6 +225,7 @@ export function useChatStream(options: UseChatStreamOptions) {
         if (!payload) {
           return;
         }
+        activeAttempts.delete(payload.roleId);
         dispatch({
           type: "role_skipped",
           roleId: payload.roleId,
@@ -224,6 +239,7 @@ export function useChatStream(options: UseChatStreamOptions) {
         if (!payload) {
           return;
         }
+        activeAttempts.clear();
         dispatch({ type: "room_finished", reason: payload.reason });
       });
 
@@ -233,7 +249,12 @@ export function useChatStream(options: UseChatStreamOptions) {
           return;
         }
 
-        const payload = safeParse<{ message?: string }>(rawData);
+        const payload = safeParse<{ roleId?: string | null; message?: string }>(rawData);
+        if (payload?.roleId) {
+          activeAttempts.delete(payload.roleId);
+          dispatch({ type: "complete", roleId: payload.roleId });
+          return;
+        }
         void handleError(payload?.message ?? "流式对话失败");
       });
 

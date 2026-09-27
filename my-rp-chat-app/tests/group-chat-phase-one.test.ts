@@ -36,9 +36,13 @@ async function run(
   mentionTarget: string | null = null,
   responseFor?: (roleId: string, call: number, prompt: string) => { content?: string; nextSpeaker?: string; skip?: boolean },
   signal?: AbortSignal,
+  options?: { previous?: { roleId: string; content: string }; ttsService?: unknown },
 ) {
   const { db } = repository();
   const chat = db.createChat("group", roles, "群聊", config);
+  if (options?.previous) db.appendMessage({
+    chatId: chat.id, role: "assistant", roleId: options.previous.roleId, content: options.previous.content,
+  });
   db.appendMessage({ chatId: chat.id, role: "user", content: "大家好" });
   let generated = 0;
   const publish = vi.fn();
@@ -62,6 +66,7 @@ async function run(
       consolidateCoreMemory: vi.fn().mockResolvedValue(null),
     } as never,
     sseService: { publish } as never,
+    ttsService: options?.ttsService as never,
   }, chat.roomConfig, 2, 0);
   try {
     await coordinator.runSession({
@@ -81,6 +86,52 @@ afterEach(() => {
 });
 
 describe("current group coordinator room modes", () => {
+  it("commits only the rewritten reply after a duplicate draft", async () => {
+    const synthesize = vi.fn().mockResolvedValue({ status: "ready", voiceId: "test" });
+    const ttsService = { isEnabled: () => true, resolveVoiceId: () => "test", synthesize };
+    const { db, messages, publish } = await run({ mode: "single_round" }, "芳乃",
+      (_roleId, call) => ({ content: call === 1 ? "我重复旧回复" : "我改写后的新回复" }),
+      undefined, { previous: { roleId: "芳乃", content: "我重复旧回复" }, ttsService });
+    expect(messages.map((message) => message.content)).toEqual(["我重复旧回复", "我改写后的新回复"]);
+    const events = publish.mock.calls.map(([event]) => event);
+    const resets = events.filter((event) => event.type === "draft_reset");
+    const done = events.filter((event) => event.type === "message_done");
+    expect(resets).toHaveLength(2);
+    expect(resets[0].attemptId).not.toBe(resets[1].attemptId);
+    expect(done).toHaveLength(1);
+    expect(done[0]).toMatchObject({ attemptId: resets[1].attemptId, content: "我改写后的新回复" });
+    expect(events.findIndex((event) => event.type === "message_done"))
+      .toBeGreaterThan(events.findIndex((event) => event.type === "draft_reset" && event.attemptId === resets[1].attemptId));
+    expect(synthesize).toHaveBeenCalledTimes(1);
+    expect(synthesize).toHaveBeenCalledWith(expect.objectContaining({ messageId: done[0].messageId }));
+    db.close();
+  });
+
+  it("does not save or synthesize either repeated candidate", async () => {
+    const synthesize = vi.fn();
+    const { db, messages, publish } = await run({ mode: "single_round" }, "芳乃",
+      () => ({ content: "我重复旧回复" }), undefined,
+      { previous: { roleId: "芳乃", content: "我重复旧回复" },
+        ttsService: { isEnabled: () => true, resolveVoiceId: () => "test", synthesize } });
+    expect(messages.map((message) => message.content)).toEqual(["我重复旧回复"]);
+    expect(publish.mock.calls.filter(([event]) => event.type === "message_done")).toHaveLength(0);
+    expect(publish).toHaveBeenCalledWith(expect.objectContaining({ type: "role_skipped", reason: "similar_to_last" }));
+    expect(synthesize).not.toHaveBeenCalled();
+    db.close();
+  });
+
+  it("resets the draft on graph validation retry and commits only the valid result", async () => {
+    const { db, messages, publish } = await run({ mode: "single_round" }, "芳乃",
+      (_roleId, call) => ({ content: call === 1 ? "晚安" : "我今晚会留下来" }));
+    expect(messages.map((message) => message.content)).toEqual(["我今晚会留下来"]);
+    const events = publish.mock.calls.map(([event]) => event);
+    const resets = events.filter((event) => event.type === "draft_reset");
+    const done = events.filter((event) => event.type === "message_done");
+    expect(resets).toHaveLength(2);
+    expect(done).toHaveLength(1);
+    expect(done[0].attemptId).toBe(resets[1].attemptId);
+    db.close();
+  });
   it("limits directed replies to the selected role in every room mode", async () => {
     for (const mode of ["single_round", "free_chat", "host_mode"] as const) {
       const { db, messages, publish } = await run(
@@ -189,6 +240,8 @@ describe("current group coordinator room modes", () => {
     expect(publish).toHaveBeenCalledWith(expect.objectContaining({
       type: "round_stats", skipped: ["茉子"], failed: ["丛雨"],
     }));
+    expect(publish.mock.calls.filter(([event]) => event.type === "message_done")
+      .map(([event]) => event.roleId)).toEqual(["芳乃"]);
     db.close();
   });
 
