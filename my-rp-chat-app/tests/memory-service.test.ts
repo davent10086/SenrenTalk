@@ -242,7 +242,7 @@ describe("MemoryService", () => {
     expect(candidate?.status).toBe("pending");
     expect(await service.recall(chat.id, "喜欢什么", character.id)).toEqual([]);
     await service.confirmEvent(chat.id, candidate!.id);
-    expect(indexMemory).toHaveBeenCalledWith(expect.objectContaining({ id: candidate!.id, status: "confirmed" }));
+    expect(indexMemory).not.toHaveBeenCalled();
     expect((await service.recall(chat.id, "喜欢什么", character.id)).map((entry) => entry.text)).toContain("用户喜欢抹茶");
     repository.close();
   });
@@ -261,9 +261,12 @@ describe("MemoryService", () => {
     expect(consolidateCoreMemory).toHaveBeenCalledTimes(1);
     expect(repository.getCoreMemory(chat.id, character.id)).toBeUndefined();
     expect(service.getSnapshot(chat.id).coreCandidates).toHaveLength(1);
-    const core = service.confirmCoreCandidate(chat.id, character.id);
-    expect(core?.keyFacts).toContain("已确认五条事件");
-    expect(repository.getCoreMemory(chat.id, character.id)?.relationshipStage).toBe("熟悉");
+    const candidate = service.getSnapshot(chat.id).coreCandidates[0];
+    expect(candidate.sourceEventIds).toHaveLength(5);
+    expect(() => service.confirmCoreCandidate(chat.id, character.id, candidate.id, { ...candidate.core, relationshipStage: "x".repeat(161) })).toThrow();
+    const core = service.confirmCoreCandidate(chat.id, character.id, candidate.id, { ...candidate.core, relationshipStage: "亲密", keyFacts: ["用户编辑的事实"] });
+    expect(core?.keyFacts).toContain("用户编辑的事实");
+    expect(repository.getCoreMemory(chat.id, character.id)?.relationshipStage).toBe("亲密");
     repository.close();
   });
 
@@ -277,6 +280,81 @@ describe("MemoryService", () => {
     const service = new MemoryService(repository, { searchMemories: vi.fn().mockRejectedValue(new Error("ES offline")), indexMemory: vi.fn() } as never);
     const results = await service.recall(chat.id, "本地", character.id);
     expect(results).toHaveLength(1); expect(results[0].text).toBe("本地可用记忆");
+    repository.close();
+  });
+
+  it("rejects orphaned and deleted ES hits even when ES cleanup fails", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "rp-chat-memory-stale-")); createdDirectories.push(directory);
+    const repository = new ChatRepository(path.join(directory, "test.sqlite")); repository.init();
+    const character = createCharacter("芳乃"); repository.upsertCharacters([character]);
+    const chat = repository.createChat("single", [character.id], "单聊");
+    repository.saveMemory(createMemoryEvent(chat.id, character.id, { id: "real", status: "confirmed", summary: "真实内容" }));
+    repository.saveSummary(chat.id, "旧摘要", character.id);
+    const service = new MemoryService(repository, { searchMemories: vi.fn().mockResolvedValue([
+      { sourceId: "orphan", text: "幽灵内容", character: character.id, score: 10 },
+      { sourceId: "real", text: "ES 过期内容", character: character.id, score: 9 },
+    ]), deleteMemory: vi.fn().mockRejectedValue(new Error("offline")) } as never);
+    expect((await service.recall(chat.id, "内容", character.id)).map((item) => item.text)).toEqual(["真实内容"]);
+    expect(service.deleteConfirmedEvent(chat.id, "real")).toBe(true);
+    expect(await service.recall(chat.id, "内容", character.id)).toEqual([]);
+    expect(repository.getSummary(chat.id, character.id)).toBeUndefined();
+    repository.close();
+  });
+
+  it("does not write an extraction after its source message was removed", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "rp-chat-memory-race-")); createdDirectories.push(directory);
+    const repository = new ChatRepository(path.join(directory, "test.sqlite")); repository.init();
+    const character = createCharacter("芳乃"); repository.upsertCharacters([character]);
+    const chat = repository.createChat("single", [character.id], "单聊");
+    repository.appendMessage({ chatId: chat.id, role: "user", content: "喜欢抹茶" });
+    repository.appendMessage({ chatId: chat.id, role: "assistant", roleId: character.id, content: "记住了" });
+    let release!: (value: unknown) => void;
+    const extraction = new Promise((resolve) => { release = resolve; });
+    const service = new MemoryService(repository, { searchMemories: vi.fn().mockResolvedValue([]) } as never, { extractEpisodicMemory: vi.fn().mockReturnValue(extraction) } as never);
+    const pending = service.extractAndPersist(chat.id, character, repository.listMessages(chat.id));
+    repository.clearMessages(chat.id);
+    release({ summary: "喜欢抹茶", emotion: "开心", importance: 9, keyPoints: [], shouldRemember: true, eventType: "fact", temporalState: "active" });
+    expect(await pending).toBeNull();
+    expect(repository.listTimelineEvents(chat.id)).toEqual([]);
+    expect(repository.getSummary(chat.id, character.id)).toBeUndefined();
+    repository.close();
+  });
+
+  it("does not regenerate a deleted memory from its still-present chat message", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "rp-chat-memory-tombstone-")); createdDirectories.push(directory);
+    const repository = new ChatRepository(path.join(directory, "test.sqlite")); repository.init();
+    const character = createCharacter("芳乃"); repository.upsertCharacters([character]);
+    const chat = repository.createChat("single", [character.id], "单聊");
+    repository.appendMessage({ chatId: chat.id, role: "user", content: "喜欢抹茶" });
+    const assistant = repository.appendMessage({ chatId: chat.id, role: "assistant", roleId: character.id, content: "记住了" });
+    const service = new MemoryService(repository, { searchMemories: vi.fn().mockResolvedValue([]), deleteMemory: vi.fn().mockResolvedValue(undefined) } as never, {
+      extractEpisodicMemory: vi.fn().mockResolvedValue({ summary: "喜欢抹茶", emotion: "开心", importance: 9, keyPoints: [], shouldRemember: true, eventType: "fact", temporalState: "active" }),
+    } as never);
+    const first = await service.extractAndPersist(chat.id, character, repository.listMessages(chat.id));
+    expect((await service.extractAndPersist(chat.id, character, repository.listMessages(chat.id)))?.id).toBe(first?.id);
+    repository.updateMemoryStatus(chat.id, first!.id, "confirmed");
+    service.deleteConfirmedEvent(chat.id, first!.id);
+    expect(repository.getMessage(assistant.id)).toBeDefined();
+    expect(await service.extractAndPersist(chat.id, character, repository.listMessages(chat.id))).toBeNull();
+    expect(repository.listTimelineEvents(chat.id)).toEqual([]);
+    repository.close();
+  });
+
+  it("clears core memory on event deletion and rejects stale core confirmations", async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), "rp-chat-core-delete-")); createdDirectories.push(directory);
+    const repository = new ChatRepository(path.join(directory, "test.sqlite")); repository.init();
+    const character = createCharacter("芳乃"); repository.upsertCharacters([character]);
+    const chat = repository.createChat("single", [character.id], "单聊");
+    for (let i = 1; i <= 5; i++) repository.saveMemory(createMemoryEvent(chat.id, character.id, { id: `e-${i}`, status: "confirmed", sequence: i }));
+    const service = new MemoryService(repository, { searchMemories: vi.fn().mockResolvedValue([]), deleteMemory: vi.fn().mockResolvedValue(undefined) } as never, { consolidateCoreMemory: vi.fn().mockResolvedValue({ userPreferences: [], userTraits: [], relationshipStage: "熟悉", relationshipNotes: [], keyFacts: ["旧事实"] }) } as never);
+    await service.consolidateCoreMemory(chat.id, character);
+    const candidate = service.getSnapshot(chat.id).coreCandidates[0];
+    expect(service.confirmCoreCandidate(chat.id, character.id, "wrong", candidate.core)).toBeUndefined();
+    expect(service.confirmCoreCandidate(chat.id, character.id, candidate.id, candidate.core)).toBeDefined();
+    expect(repository.getCoreMemory(chat.id, character.id)).toBeDefined();
+    service.deleteConfirmedEvent(chat.id, "e-1");
+    expect(repository.getCoreMemory(chat.id, character.id)).toBeUndefined();
+    expect(repository.getConsolidationSequence(chat.id, character.id)).toBe(0);
     repository.close();
   });
 
@@ -303,11 +381,12 @@ describe("MemoryService", () => {
     const character = createCharacter("芳乃"); repository.upsertCharacters([character]); const chat = repository.createChat("single", [character.id], "单聊");
     repository.saveMemory(createMemoryEvent(chat.id, character.id, { id: "old", status: "confirmed", factKey: "favorite", temporalState: "active" }));
     repository.saveMemory(createMemoryEvent(chat.id, character.id, { id: "new", status: "pending", factKey: "favorite", temporalState: "active" }));
-    const deleteMemory = vi.fn().mockResolvedValue(undefined);
-    const service = new MemoryService(repository, { searchMemories: vi.fn().mockResolvedValue([]), indexMemory: vi.fn(), deleteMemory } as never);
+    const service = new MemoryService(repository, { searchMemories: vi.fn().mockResolvedValue([]), indexMemory: vi.fn(), deleteMemory: vi.fn() } as never);
     await service.confirmEvent(chat.id, "new");
     expect(repository.listTimelineEvents(chat.id).find((event) => event.id === "old")?.temporalState).toBe("superseded");
-    expect(deleteMemory).toHaveBeenCalledWith("old");
+    expect(repository.listMemoryIndexOperations().map((operation) => [operation.kind, operation.eventId])).toEqual(expect.arrayContaining([
+      ["delete", "old"], ["upsert", "new"],
+    ]));
     expect((await service.recall(chat.id, "favorite", character.id)).map((entry) => entry.sourceId)).toEqual(["new"]);
     repository.close();
   });
@@ -321,7 +400,8 @@ describe("MemoryService", () => {
     const service = new MemoryService(repository, { searchMemories: vi.fn(), indexMemory } as never);
     expect((await service.confirmEvent(chat.id, "pending"))?.status).toBe("confirmed");
     await service.confirmEvent(chat.id, "pending");
-    expect(indexMemory).toHaveBeenCalledTimes(1);
+    expect(indexMemory).not.toHaveBeenCalled();
+    expect(repository.listMemoryIndexOperations()).toMatchObject([{ kind: "upsert", eventId: "pending" }]);
     repository.saveMemory(createMemoryEvent(chat.id, character.id, { id: "dismissed", status: "pending" }));
     expect((await service.dismissEvent(chat.id, "dismissed"))?.status).toBe("dismissed");
     expect(await service.confirmEvent(chat.id, "dismissed")).toBeUndefined();

@@ -198,6 +198,7 @@ export interface CoreMemoryCandidate {
   character: string;
   core: CoreMemory;
   sourceSequence: number;
+  sourceEventIds: string[];
   createdAt: number;
 }
 
@@ -432,12 +433,22 @@ export function createDefaultGroupChatRoomConfig(participantCount: number): Grou
   };
 }
 
+export function createGroupChatRoomConfigForMode(
+  participantCount: number,
+  mode: GroupChatRoomMode,
+): GroupChatRoomConfig {
+  const defaults = createDefaultGroupChatRoomConfig(participantCount);
+  return mode === "free_chat"
+    ? { ...defaults, mode, maxRounds: 2, maxMessages: Math.max(1, participantCount) * 2 }
+    : { ...defaults, mode };
+}
+
 export function normalizeGroupChatRoomConfig(
   participantCount: number,
   roomConfig?: Partial<GroupChatRoomConfig>,
   fallbackTargetRoleId?: string | null,
 ): GroupChatRoomConfig {
-  const defaults = createDefaultGroupChatRoomConfig(participantCount);
+  const defaults = createGroupChatRoomConfigForMode(participantCount, roomConfig?.mode ?? "single_round");
   const merged: GroupChatRoomConfig = {
     ...defaults,
     ...roomConfig,

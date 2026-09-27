@@ -1,9 +1,10 @@
 import { ChatWorkspace } from "../components/ChatWorkspace";
 import { useChatContext } from "../context/ChatContext";
 import { useViewContext } from "../context/ViewContext";
-import { createDefaultGroupChatRoomConfig, type GroupChatRoomMode } from "../../common/types";
+import { createGroupChatRoomConfigForMode, type GroupChatRoomMode } from "../../common/types";
 
 export function GroupChatPage() {
+  const [pendingHostSelection, setPendingHostSelection] = useState(false);
   const { activeChat, updateGroupChatRoom } = useViewContext();
   const {
     messages,
@@ -31,14 +32,22 @@ export function GroupChatPage() {
 
   const effectiveTarget = targetRoleId ?? activeChat?.roomConfig?.targetRoleId ?? null;
   const participantCount = activeChat?.participants.length ?? 0;
+  const hostRoleId = activeChat?.roomConfig?.hostRoleId ?? "";
+  const validHost = Boolean(hostRoleId && activeChat?.participants.includes(hostRoleId));
+  const hostMode = activeChat?.roomConfig?.mode === "host_mode";
 
   const handleModeChange = (nextMode: GroupChatRoomMode) => {
-    const defaults = createDefaultGroupChatRoomConfig(participantCount);
+    if (nextMode === "host_mode" && !validHost) {
+      setPendingHostSelection(true);
+      return;
+    }
+    setPendingHostSelection(false);
+    const defaults = createGroupChatRoomConfigForMode(participantCount, nextMode);
     void updateGroupChatRoom({
       roomConfig: {
         mode: nextMode,
-        maxRounds: nextMode === "single_round" ? 1 : defaults.maxRounds,
-        maxMessages: nextMode === "single_round" ? Math.max(1, participantCount) : defaults.maxMessages,
+        maxRounds: defaults.maxRounds,
+        maxMessages: defaults.maxMessages,
       },
       roomState: {
         currentRound: 0,
@@ -60,7 +69,7 @@ export function GroupChatPage() {
       agentStatus={agentStatus}
       activeRoleId={activeRoleId}
       isStreaming={isStreaming}
-      error={streamError}
+      error={hostMode && !validHost ? "请先选择房间内的主持角色。" : streamError}
       notice={streamNotice}
       mentionTarget={effectiveTarget}
       currentRound={currentRound}
@@ -79,7 +88,7 @@ export function GroupChatPage() {
       headerExtra={
         <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
           <select
-            value={activeChat?.roomConfig?.mode ?? "single_round"}
+            value={pendingHostSelection ? "host_mode" : activeChat?.roomConfig?.mode ?? "single_round"}
             onChange={(event) => handleModeChange(event.target.value as GroupChatRoomMode)}
             style={{
               padding: "4px 8px",
@@ -94,6 +103,31 @@ export function GroupChatPage() {
             <option value="free_chat">自由群聊</option>
             <option value="host_mode">主持模式</option>
           </select>
+          {pendingHostSelection || hostMode ? (
+            <select
+              aria-label="选择主持角色"
+              value={validHost ? hostRoleId : ""}
+              onChange={(event) => {
+                const selectedHost = event.target.value;
+                if (!selectedHost) return;
+                const defaults = createGroupChatRoomConfigForMode(participantCount, "host_mode");
+                void updateGroupChatRoom({
+                  roomConfig: {
+                    mode: "host_mode",
+                    hostRoleId: selectedHost,
+                    maxRounds: defaults.maxRounds,
+                    maxMessages: defaults.maxMessages,
+                  },
+                });
+                setPendingHostSelection(false);
+              }}
+            >
+              <option value="">选择主持角色</option>
+              {activeChat?.participants.map((participant) => (
+                <option key={participant} value={participant}>{participant}</option>
+              ))}
+            </select>
+          ) : null}
           <select
             value={effectiveTarget ?? ""}
             onChange={(event) => void updateGroupChatRoom({
@@ -121,3 +155,4 @@ export function GroupChatPage() {
     />
   );
 }
+import { useState } from "react";

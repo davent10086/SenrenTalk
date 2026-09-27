@@ -8,6 +8,8 @@ import type {
   GroupChatRoomState,
   GroupChatSkipReason,
   ChatMemorySnapshot,
+  CoreMemoryCandidate,
+  CoreMemory,
 } from "../../common/types";
 import * as apiClient from "../api/client";
 import type { PendingAttachmentDraft } from "../types";
@@ -41,6 +43,42 @@ interface ChatWorkspaceProps {
   onStopGeneration?: () => Promise<void>;
   onClear?: () => Promise<void>;
   onDelete?: () => Promise<void>;
+}
+
+function CoreCandidateEditor({ candidate, events, chatId, onSaved }: { candidate: CoreMemoryCandidate; events: ChatMemorySnapshot["events"]; chatId: string; onSaved: () => Promise<void> }) {
+  const [draft, setDraft] = useState(() => ({
+    userPreferences: candidate.core.userPreferences.join("\n"),
+    userTraits: candidate.core.userTraits.join("\n"),
+    relationshipNotes: candidate.core.relationshipNotes.join("\n"),
+    keyFacts: candidate.core.keyFacts.join("\n"),
+    relationshipStage: candidate.core.relationshipStage,
+  }));
+  const [error, setError] = useState<string | null>(null);
+  const setField = (field: keyof Pick<CoreMemory, "userPreferences" | "userTraits" | "relationshipNotes" | "keyFacts">, value: string) =>
+    setDraft((current) => ({ ...current, [field]: value }));
+  const submit = async () => {
+    try {
+      const lines = (value: string) => value.split("\n").map((item) => item.trim()).filter(Boolean);
+      await apiClient.confirmCoreMemory(chatId, candidate.character, candidate.id, {
+        userPreferences: lines(draft.userPreferences), userTraits: lines(draft.userTraits),
+        relationshipNotes: lines(draft.relationshipNotes), keyFacts: lines(draft.keyFacts),
+        relationshipStage: draft.relationshipStage,
+      });
+      await onSaved();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "确认失败，请刷新后重试");
+    }
+  };
+  return <div style={{ marginTop: 8, padding: 8, background: "rgba(100,160,255,.12)", borderRadius: 6 }}>
+    <small>{candidate.character} 的核心记忆候选</small>
+    <div><small>来源：{candidate.sourceEventIds.map((id) => events.find((event) => event.id === id)?.summary ?? id).join("；")}</small></div>
+    {([ ["userPreferences", "用户偏好"], ["userTraits", "用户特质"], ["relationshipNotes", "关系备注"], ["keyFacts", "关键事实"] ] as const).map(([field, label]) =>
+      <label key={field} style={{ display: "block", marginTop: 6 }}>{label}（每行一项）<textarea aria-label={label} value={draft[field]} onChange={(event) => setField(field, event.target.value)} style={{ display: "block", width: "100%" }} /></label>)}
+    <label style={{ display: "block", marginTop: 6 }}>关系阶段<input aria-label="关系阶段" value={draft.relationshipStage} onChange={(event) => setDraft((current) => ({ ...current, relationshipStage: event.target.value }))} /></label>
+    {error ? <p className="error-text">{error}</p> : null}
+    <button onClick={() => void submit()}>确认</button>{" "}
+    <button onClick={async () => { await apiClient.dismissCoreMemory(chatId, candidate.character); await onSaved(); }}>忽略</button>
+  </div>;
 }
 
 export function ChatWorkspace(props: ChatWorkspaceProps) {
@@ -177,13 +215,7 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
               <button onClick={async () => { await apiClient.dismissMemory(props.chat!.id, event.id); await refreshMemories(); }}>忽略</button>
             </div>
           ))}
-          {memories?.coreCandidates.map((candidate) => (
-            <div key={candidate.id} style={{ marginTop: "8px", padding: "8px", background: "rgba(100,160,255,.12)", borderRadius: "6px" }}>
-              <small>{candidate.character} 的核心记忆候选</small><div>{candidate.core.keyFacts.join("；") || candidate.core.relationshipStage}</div>
-              <button onClick={async () => { await apiClient.confirmCoreMemory(props.chat!.id, candidate.character); await refreshMemories(); }}>确认</button>{" "}
-              <button onClick={async () => { await apiClient.dismissCoreMemory(props.chat!.id, candidate.character); await refreshMemories(); }}>忽略</button>
-            </div>
-          ))}
+          {memories?.coreCandidates.map((candidate) => <CoreCandidateEditor key={candidate.id} candidate={candidate} events={memories.events} chatId={props.chat!.id} onSaved={refreshMemories} />)}
           {memories?.events.filter((event) => event.status === "confirmed").map((event) => (
             <div key={event.id} style={{ marginTop: "8px", borderTop: "1px solid var(--theme-border, #ddd)", paddingTop: "7px" }}>
               <small>{event.temporalState} · {event.occurredAt ? new Date(event.occurredAt).toLocaleDateString() : `于 ${new Date(event.recordedAt ?? event.timestamp).toLocaleDateString()} 提及`}</small>

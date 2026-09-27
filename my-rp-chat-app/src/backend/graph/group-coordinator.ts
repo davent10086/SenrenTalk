@@ -173,20 +173,13 @@ export class GroupChatCoordinator {
     sharedHistory: ChatMessage[];
   }): string[] {
     const { participants, targetRoleId, round } = params;
+    if (targetRoleId) {
+      return [targetRoleId];
+    }
     if (this.roomConfig.mode === "host_mode") {
-      const hostRoleId = this.roomConfig.hostRoleId && participants.includes(this.roomConfig.hostRoleId)
-        ? this.roomConfig.hostRoleId
-        : participants[0];
+      const hostRoleId = this.roomConfig.hostRoleId!;
       const others = participants.filter((participant) => participant !== hostRoleId);
       return [hostRoleId, ...others];
-    }
-
-    if (targetRoleId) {
-      const rest = participants.filter((participant) => participant !== targetRoleId);
-      if (this.roomConfig.mode === "single_round") {
-        return [targetRoleId, ...rest];
-      }
-      return [targetRoleId, ...rest];
     }
 
     if (this.roomConfig.mode === "single_round") {
@@ -499,12 +492,20 @@ export class GroupChatCoordinator {
     let round = 1;
     let idleStreak = 0;
     let finishReason = "本轮已结束";
+    const directedTarget = mentionTarget ?? roomConfig.targetRoleId ?? null;
+    if (directedTarget && !participants.includes(directedTarget)) {
+      throw new Error("定向回复的角色不属于当前房间。");
+    }
+    if (roomConfig.mode === "host_mode" &&
+      (!roomConfig.hostRoleId || !participants.includes(roomConfig.hostRoleId))) {
+      throw new Error("请先为主持模式选择房间内的主持角色。");
+    }
 
     participants.forEach((participant) => this.getOrCreateAgent(participant));
 
     while (generatedCount < roomConfig.maxMessages && round <= roomConfig.maxRounds) {
       this.ensureNotAborted();
-      const targetRoleId = mentionTarget ?? roomConfig.targetRoleId ?? null;
+      const targetRoleId = directedTarget;
       const plannedSpeakers = this.planRound({
         participants,
         targetRoleId,
@@ -675,7 +676,7 @@ export class GroupChatCoordinator {
       };
       this.publishRoomState(chatId, roomState);
 
-      if (roomConfig.mode === "single_round") {
+      if (targetRoleId || roomConfig.mode === "single_round") {
         finishReason = targetRoleId ? "仅定向角色回复" : "本轮已结束";
         break;
       }

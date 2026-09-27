@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { motion } from "framer-motion";
 import { MessageSquarePlus } from "lucide-react";
-import { createDefaultGroupChatRoomConfig, type GroupChatRoomMode } from "../../common/types";
+import { createGroupChatRoomConfigForMode, type GroupChatRoomMode } from "../../common/types";
 import { useBootstrapContext } from "../context/BootstrapContext";
 import { useViewContext } from "../context/ViewContext";
 import { getAvatarPath } from "../utils/avatar";
@@ -11,8 +11,10 @@ export function GroupChatCreatePage() {
   const { createGroupChat } = useViewContext();
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [mode, setMode] = useState<GroupChatRoomMode>("single_round");
+  const [hostRoleId, setHostRoleId] = useState("");
 
   const toggle = (id: string) => {
+    if (selected.has(id) && hostRoleId === id) setHostRoleId("");
     setSelected((prev) => {
       const next = new Set(prev);
       if (next.has(id)) {
@@ -26,11 +28,10 @@ export function GroupChatCreatePage() {
 
   const handleCreate = () => {
     const participants = [...selected];
-    const defaults = createDefaultGroupChatRoomConfig(participants.length);
+    const defaults = createGroupChatRoomConfigForMode(participants.length, mode);
     void createGroupChat(participants, {
       ...defaults,
-      mode,
-      maxRounds: mode === "single_round" ? 1 : defaults.maxRounds,
+      hostRoleId: mode === "host_mode" ? hostRoleId : null,
     });
   };
 
@@ -53,11 +54,17 @@ export function GroupChatCreatePage() {
             <option value="free_chat">自由群聊</option>
             <option value="host_mode">主持模式</option>
           </select>
+          {mode === "host_mode" ? (
+            <select aria-label="选择主持角色" value={hostRoleId} onChange={(event) => setHostRoleId(event.target.value)}>
+              <option value="">选择主持角色</option>
+              {[...selected].map((roleId) => <option key={roleId} value={roleId}>{roleId}</option>)}
+            </select>
+          ) : null}
           <motion.button
             initial={{ opacity: 0, scale: 0.9 }}
             animate={{ opacity: 1, scale: 1 }}
             className="primary-button"
-            disabled={selected.size < 2 || selected.size > 5}
+            disabled={selected.size < 2 || selected.size > 5 || (mode === "host_mode" && !hostRoleId)}
             onClick={handleCreate}
           >
             <MessageSquarePlus size={18} />创建群聊（{selected.size} 人）

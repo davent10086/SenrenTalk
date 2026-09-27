@@ -9,6 +9,7 @@ import { ChatRepository } from "./db/database";
 import type { GraphDependencies } from "./graph/graph-types";
 import { CharacterService } from "./services/characters/character-service";
 import { ElasticsearchService } from "./services/es/elasticsearch-service";
+import { MemoryIndexSyncService } from "./services/es/memory-index-sync-service";
 import { LlmService, type ImageInput } from "./services/llm/llm-service";
 import { MemoryService } from "./services/memory/memory-service";
 import { SseService } from "./services/stream/sse-service";
@@ -41,6 +42,7 @@ export class AppRuntime {
   readonly sseService: SseService;
   readonly characterService: CharacterService;
   readonly elasticsearchService: ElasticsearchService;
+  readonly memoryIndexSyncService: MemoryIndexSyncService;
   readonly memoryService: MemoryService;
   readonly llmService: LlmService;
   readonly ttsService: TtsService;
@@ -59,8 +61,11 @@ export class AppRuntime {
     this.sseService = new SseService();
     this.characterService = new CharacterService(this.config);
     this.elasticsearchService = new ElasticsearchService(this.config);
+    this.memoryIndexSyncService = new MemoryIndexSyncService(this.repository, this.elasticsearchService);
     this.llmService = new LlmService(this.config);
-    this.memoryService = new MemoryService(this.repository, this.elasticsearchService, this.llmService);
+    this.memoryService = new MemoryService(this.repository, this.elasticsearchService, this.llmService, () => {
+      void this.memoryIndexSyncService.drain().catch(() => undefined);
+    });
     this.ttsService = new TtsService(this.config);
     this.mediaManager = new MediaManager(this.config);
 
@@ -87,6 +92,7 @@ export class AppRuntime {
   async start(): Promise<void> {
     this.repository.init();
     const legacyMemoryChats = this.repository.takeLegacyMemoryMigration();
+    this.repository.seedMemoryIndexOutboxOnce();
     const characters = await this.characterService.loadCharacters();
     this.repository.upsertCharacters(characters);
     await this.sseService.start();
@@ -97,6 +103,8 @@ export class AppRuntime {
         try { await this.elasticsearchService.deleteMemoriesBySession(chatId); }
         catch (error) { console.warn("[AppRuntime] legacy ES memory cleanup failed:", error); }
       }
+      try { await this.memoryIndexSyncService.drain(); }
+      catch (error) { console.warn("[AppRuntime] ES memory sync deferred; SQLite remains authoritative:", error); }
     }
   }
 
@@ -211,6 +219,7 @@ export class AppRuntime {
       throw Object.assign(new Error("Chat not found"), { statusCode: 404 });
     }
     this.repository.clearMessages(chatId);
+    void this.memoryIndexSyncService?.drain().catch(() => undefined);
     try { await this.elasticsearchService.deleteMemoriesBySession(chatId); } catch (error) { console.warn("[AppRuntime] ES memory cleanup failed:", error); }
     await this.mediaManager.cleanupChatMedia(chatId);
   }
@@ -221,6 +230,7 @@ export class AppRuntime {
       throw Object.assign(new Error("Chat not found"), { statusCode: 404 });
     }
     this.repository.deleteChat(chatId);
+    void this.memoryIndexSyncService?.drain().catch(() => undefined);
     try { await this.elasticsearchService.deleteMemoriesBySession(chatId); } catch (error) { console.warn("[AppRuntime] ES memory cleanup failed:", error); }
     await this.mediaManager.cleanupChatMedia(chatId);
   }
@@ -232,6 +242,10 @@ export class AppRuntime {
     title?: string,
     roomConfig?: Partial<GroupChatRoomConfig>,
   ): ChatRecord {
+    if (mode === "group" && roomConfig?.mode === "host_mode" &&
+      (!roomConfig.hostRoleId || !participants.includes(roomConfig.hostRoleId))) {
+      throw Object.assign(new Error("主持模式必须选择房间内的主持角色。"), { statusCode: 400 });
+    }
     return this.repository.createChat(mode, participants, title, roomConfig);
   }
 
@@ -245,6 +259,12 @@ export class AppRuntime {
     let nextChat = this.repository.getChat(chatId);
     if (!nextChat) {
       throw new Error("会话不存在，请先创建会话。");
+    }
+
+    const nextConfig = { ...nextChat.roomConfig, ...updates.roomConfig };
+    if (nextConfig.mode === "host_mode" &&
+      (!nextConfig.hostRoleId || !nextChat.participants.includes(nextConfig.hostRoleId))) {
+      throw Object.assign(new Error("主持模式必须选择房间内的主持角色。"), { statusCode: 400 });
     }
 
     if (updates.roomConfig) {
@@ -319,6 +339,25 @@ export class AppRuntime {
     if (!chat) {
       throw new Error("会话不存在，请先创建会话。");
     }
+    if (request.mode !== chat.mode) {
+      throw Object.assign(new Error("请求模式与当前会话不一致。"), { statusCode: 400 });
+    }
+
+    if (request.mode === "group") {
+      if (request.participants.length !== chat.participants.length ||
+        new Set(request.participants).size !== chat.participants.length ||
+        request.participants.some((participant) => !chat.participants.includes(participant))) {
+        throw Object.assign(new Error("群聊参与角色与当前房间不一致。"), { statusCode: 400 });
+      }
+      const targetRoleId = request.targetRoleId ?? request.mentionTarget ?? chat.roomConfig?.targetRoleId ?? null;
+      if (targetRoleId && !chat.participants.includes(targetRoleId)) {
+        throw Object.assign(new Error("定向回复的角色不属于当前房间。"), { statusCode: 400 });
+      }
+      if (chat.roomConfig?.mode === "host_mode" &&
+        (!chat.roomConfig.hostRoleId || !chat.participants.includes(chat.roomConfig.hostRoleId))) {
+        throw Object.assign(new Error("请先为主持模式选择房间内的主持角色。"), { statusCode: 400 });
+      }
+    }
 
     // 1. 持久化用户消息和附件
     if (request.mode === "group") {
@@ -385,6 +424,7 @@ export class AppRuntime {
     this.repository.updateMessageContent(messageId, normalizedContent);
     this.repository.truncateMessagesAfter(chat.id, messageId);
     this.repository.invalidateMemoriesBySourceMessages(chat.id, invalidatedSourceIds);
+    void this.memoryIndexSyncService?.drain().catch(() => undefined);
     try { await this.elasticsearchService.deleteMemoriesBySession(chat.id); } catch (error) { console.warn("[AppRuntime] ES memory cleanup failed:", error); }
     await this.cleanupMessagesMedia(removedMessages);
 

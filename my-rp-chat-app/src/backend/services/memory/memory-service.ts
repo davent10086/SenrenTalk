@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { ChatMemorySnapshot, ChatMessage, CharacterProfile, CoreMemory, CoreMemoryCandidate, MemoryEvent, RetrievedDoc } from "../../../common/types";
-import { ChatRepository } from "../../db/database";
+import type { MemoryRepository } from "../../db/memory-repository";
 import { ElasticsearchService } from "../es/elasticsearch-service";
 import { LlmService } from "../llm/llm-service";
 
@@ -20,9 +20,10 @@ export class MemoryService {
    * @param llmService - 可选的大模型服务，用于记忆提炼与摘要生成
    */
   constructor(
-    private readonly repository: ChatRepository,
+    private readonly repository: MemoryRepository,
     private readonly elasticsearchService: ElasticsearchService,
     private readonly llmService?: LlmService,
+    private readonly onIndexChanged?: () => void,
   ) {}
 
   // ============ Layer 1: 短期工作记忆 ============
@@ -51,13 +52,13 @@ export class MemoryService {
    * @param messages  - 当前对话消息列表
    * @returns 生成的摘要字符串
    */
-  async updateSummary(chatId: string, character: CharacterProfile, messages: ChatMessage[]): Promise<string> {
+  async updateSummary(chatId: string, character: CharacterProfile, messages: ChatMessage[], expectedEpoch = this.repository.getMemoryEpoch(chatId, character.id)): Promise<string> {
     const recentMessages = messages.slice(-6);
     if (recentMessages.length < 2) {
       const fallback = recentMessages
         .map((m) => `${m.role}${m.roleId ? `(${m.roleId})` : ""}: ${m.content.slice(0, 180)}`)
         .join("\n").slice(0, 1200);
-      this.repository.saveSummary(chatId, fallback || "暂无摘要", character.id);
+      this.repository.saveSummaryIfSourceCurrent(chatId, character.id, fallback || "暂无摘要", recentMessages, expectedEpoch);
       return fallback || "暂无摘要";
     }
 
@@ -71,7 +72,7 @@ export class MemoryService {
           recentMessages: messageText,
         });
         const bounded = summary.slice(0, 1200);
-        this.repository.saveSummary(chatId, bounded, character.id);
+        this.repository.saveSummaryIfSourceCurrent(chatId, character.id, bounded, recentMessages, expectedEpoch);
         return bounded;
       } catch {
         // LLM 失败时降级到原始方式
@@ -82,7 +83,7 @@ export class MemoryService {
     const fallback = recentMessages
       .map((m) => `${m.role}${m.roleId ? `(${m.roleId})` : ""}: ${m.content.slice(0, 180)}`)
       .join("\n").slice(0, 1200);
-    this.repository.saveSummary(chatId, fallback || "暂无摘要", character.id);
+    this.repository.saveSummaryIfSourceCurrent(chatId, character.id, fallback || "暂无摘要", recentMessages, expectedEpoch);
     return fallback || "暂无摘要";
   }
 
@@ -108,7 +109,12 @@ export class MemoryService {
       console.warn("[MemoryService] ES recall failed; using SQLite:", error);
     }
     if (esResults.length > 0) {
-      return esResults;
+      const valid = this.repository.getRecallableEvents(chatId, characterId, esResults.map((item) => item.sourceId));
+      const filtered = esResults.flatMap((item) => {
+        const event = valid.get(item.sourceId);
+        return event ? [{ ...item, text: event.summary || event.content, character: event.character }] : [];
+      });
+      if (filtered.length) return filtered;
     }
     // ES 降级时返回 SQLite 记忆，按 character 过滤防止串角色
     // score 归一化到 0-1 范围（importance/10），与 ES 降级路径保持一致
@@ -138,6 +144,7 @@ export class MemoryService {
     character: CharacterProfile,
     messages: ChatMessage[],
   ): Promise<MemoryEvent | null> {
+    const expectedEpoch = this.repository.getMemoryEpoch(chatId, character.id);
     // 从后向前遍历一次，同时取出最新的用户消息和该角色的最新助手消息
     let latestUser: ChatMessage | undefined;
     let latestAssistant: ChatMessage | undefined;
@@ -153,15 +160,15 @@ export class MemoryService {
     }
     if (!latestUser || !latestAssistant) return null;
 
-    if (!this.llmService) { await this.updateSummary(chatId, character, messages); return null; }
+    if (!this.llmService) { await this.updateSummary(chatId, character, messages, expectedEpoch); return null; }
     let extraction: Awaited<ReturnType<LlmService["extractEpisodicMemory"]>>;
     try {
       extraction = await this.llmService.extractEpisodicMemory({ characterName: character.displayName, userInput: latestUser.content, assistantOutput: latestAssistant.content });
-    } catch { await this.updateSummary(chatId, character, messages); return null; }
+    } catch { await this.updateSummary(chatId, character, messages, expectedEpoch); return null; }
     const importance = Math.max(1, Math.min(10, Math.round(extraction.importance)));
     const summary = extraction.summary.trim().slice(0, 160);
     const keyPoints = extraction.keyPoints.map((point) => point.trim().slice(0, 80)).filter(Boolean).slice(0, 5);
-    if (!extraction.shouldRemember || importance < 7 || !summary) { await this.updateSummary(chatId, character, messages); return null; }
+    if (!extraction.shouldRemember || importance < 7 || !summary) { await this.updateSummary(chatId, character, messages, expectedEpoch); return null; }
 
     const event: MemoryEvent = {
       id: randomUUID(),
@@ -182,11 +189,11 @@ export class MemoryService {
       factKey: extraction.factKey?.trim().slice(0, 80),
     };
 
-    this.repository.saveMemory(event);
+    const persisted = this.repository.saveMemoryIfSourceCurrent(event, latestAssistant.content, expectedEpoch);
     // 更新 L1 摘要
-    await this.updateSummary(chatId, character, messages);
+    await this.updateSummary(chatId, character, messages, expectedEpoch);
 
-    return event;
+    return persisted ?? null;
   }
 
   // ============ Layer 3: 核心记忆 ============
@@ -238,17 +245,16 @@ export class MemoryService {
         id: currentCore?.id ?? randomUUID(),
         chatId,
         character: character.id,
-        userPreferences: [...new Set(result.userPreferences)].slice(0, 12),
-        userTraits: [...new Set(result.userTraits)].slice(0, 12),
-        relationshipStage: result.relationshipStage || (currentCore?.relationshipStage ?? ""),
-        relationshipNotes: [...new Set(result.relationshipNotes)].slice(0, 12),
-        keyFacts: [...new Set(result.keyFacts)].slice(0, 16),
+        userPreferences: [...new Set(result.userPreferences.map((value) => value.trim().slice(0, 160)))].filter(Boolean).slice(0, 12),
+        userTraits: [...new Set(result.userTraits.map((value) => value.trim().slice(0, 160)))].filter(Boolean).slice(0, 12),
+        relationshipStage: (result.relationshipStage || (currentCore?.relationshipStage ?? "")).slice(0, 160),
+        relationshipNotes: [...new Set(result.relationshipNotes.map((value) => value.trim().slice(0, 160)))].filter(Boolean).slice(0, 12),
+        keyFacts: [...new Set(result.keyFacts.map((value) => value.trim().slice(0, 160)))].filter(Boolean).slice(0, 16),
         lastUpdated: Date.now(),
       };
 
-      const candidate: CoreMemoryCandidate = { id: randomUUID(), chatId, character: character.id, core, sourceSequence: Math.max(...recentEvents.map((event) => event.sequence ?? cursor)), createdAt: Date.now() };
-      this.repository.saveCoreCandidate(candidate);
-      return core;
+      const candidate: CoreMemoryCandidate = { id: randomUUID(), chatId, character: character.id, core, sourceSequence: Math.max(...recentEvents.map((event) => event.sequence ?? cursor)), sourceEventIds: recentEvents.map((event) => event.id), createdAt: Date.now() };
+      return this.repository.saveCoreCandidateIfCurrent(candidate, cursor) ? core : null;
     } catch {
       return currentCore ?? null;
     }
@@ -264,16 +270,12 @@ export class MemoryService {
     if (!event) return undefined;
     if (previous?.status === "confirmed") return event;
     const supersededIds = this.repository.supersedeConflictingFacts(event);
-    await Promise.all(supersededIds.map(async (id) => {
-      try {
-        await this.elasticsearchService.deleteMemory(id);
-      } catch (error) {
-        console.warn("[MemoryService] superseded event ES cleanup failed:", error);
-      }
-    }));
-    try { await this.elasticsearchService.indexMemory(event); } catch (error) { console.warn("[MemoryService] confirmed event ES index failed:", error); }
+    if (supersededIds.length) this.repository.clearDerivedMemory(chatId, event.character);
+    this.repository.memoryIndexOutbox.queueUpsert(event);
+    supersededIds.forEach((id) => this.repository.memoryIndexOutbox.queueDelete(chatId, id));
     const character = this.repository.getCharacter(event.character);
     if (character) await this.consolidateCoreMemory(chatId, character);
+    this.onIndexChanged?.();
     return event;
   }
 
@@ -282,16 +284,24 @@ export class MemoryService {
   }
 
   deleteConfirmedEvent(chatId: string, eventId: string): boolean {
-    const event = this.repository.listTimelineEvents(chatId).find((item) => item.id === eventId && item.status === "confirmed");
+    const event = this.repository.deleteConfirmedMemory(chatId, eventId);
     if (!event) return false;
-    this.repository.deleteMemoryEvent(eventId); void this.elasticsearchService.deleteMemory(eventId).catch(() => undefined); return true;
+    this.repository.memoryIndexOutbox.queueDelete(chatId, eventId);
+    this.onIndexChanged?.();
+    return true;
   }
 
-  confirmCoreCandidate(chatId: string, characterId: string): CoreMemory | undefined {
+  confirmCoreCandidate(chatId: string, characterId: string, candidateId?: string, edits?: Omit<CoreMemory, "id" | "chatId" | "character" | "lastUpdated">): CoreMemory | undefined {
     const candidate = this.repository.getCoreCandidate(chatId, characterId);
-    if (!candidate || candidate.chatId !== chatId) return undefined;
-    this.repository.saveCoreMemory(candidate.core); this.repository.setConsolidationSequence(chatId, characterId, candidate.sourceSequence); this.repository.deleteCoreCandidate(chatId, characterId);
-    return candidate.core;
+    if (!candidate || candidate.chatId !== chatId || (candidateId && candidate.id !== candidateId)) return undefined;
+    const source = edits ?? candidate.core;
+    const bounded = (value: unknown, maxItems: number): string[] => {
+      if (!Array.isArray(value) || value.length > maxItems || value.some((item) => typeof item !== "string" || item.trim().length > 160)) throw Object.assign(new Error("核心记忆内容无效"), { statusCode: 400 });
+      return value.map((item: string) => item.trim()).filter(Boolean);
+    };
+    if (typeof source.relationshipStage !== "string" || source.relationshipStage.length > 160) throw Object.assign(new Error("关系阶段无效"), { statusCode: 400 });
+    const core: CoreMemory = { ...candidate.core, userPreferences: bounded(source.userPreferences, 12), userTraits: bounded(source.userTraits, 12), relationshipStage: source.relationshipStage.trim(), relationshipNotes: bounded(source.relationshipNotes, 12), keyFacts: bounded(source.keyFacts, 16), lastUpdated: Date.now() };
+    return this.repository.confirmCoreCandidateAtomic(chatId, characterId, candidate.id, core);
   }
 
   dismissCoreCandidate(chatId: string, characterId: string): boolean {

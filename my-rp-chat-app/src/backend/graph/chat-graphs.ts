@@ -1,4 +1,3 @@
-import { END, START, StateGraph } from "@langchain/langgraph";
 import { randomUUID } from "node:crypto";
 import type {
   CharacterProfile,
@@ -10,9 +9,10 @@ import type {
 import { ChatRepository } from "../db/database";
 import type { ImageIdentityCandidate, ImageInput, LlmService } from "../services/llm/llm-service";
 import { TtsService } from "../services/tts/tts-service";
-import { ChatState, type ChatGraphState, type GraphDependencies, ensureNotAborted, findLastUserMessage } from "./graph-types";
+import { type ChatGraphState, type GraphDependencies, ensureNotAborted, findLastUserMessage } from "./graph-types";
 import { buildRetrievalQuery, hasExplicitImageIdentity, stripCharacterName } from "./retrieval-helpers";
 import { validateResponseIssues } from "./validation";
+import { compileSingleChatGraph } from "./single-chat-graph";
 
 export type { ChatGraphState, GraphDependencies } from "./graph-types";
 
@@ -712,7 +712,13 @@ async function retrieveMemoryNode(state: ChatGraphState, deps: GraphDependencies
   const character = state.character ?? (await getCharacter(state, deps.repository));
   const coreMem = deps.memoryService.getCoreMemory(state.chatId, character.id);
   const coreSummary = coreMem
-    ? [coreMem.relationshipStage, ...coreMem.keyFacts.slice(0, 3)].filter(Boolean).join("\n")
+    ? [
+      `关系阶段：${coreMem.relationshipStage}`,
+      `用户偏好：${coreMem.userPreferences.join("；")}`,
+      `用户特质：${coreMem.userTraits.join("；")}`,
+      `关系备注：${coreMem.relationshipNotes.join("；")}`,
+      `关键事实：${coreMem.keyFacts.join("；")}`,
+    ].join("\n").slice(0, 1600)
     : undefined;
   return {
     memories,
@@ -934,37 +940,11 @@ function bindNode(fn: (state: ChatGraphState, deps: GraphDependencies) => Promis
  * 同时被 GroupChatCoordinator 复用为每个 agent 的执行单元。
  */
 export function createSingleChatGraph(deps: GraphDependencies) {
-  const graph = new StateGraph(ChatState)
-    .addNode("prepare_turn", bindNode(prepareTurnNode, deps))
-    .addNode("extract_tags", bindNode(extractTagsNode, deps))
-    .addNode("retrieve_context", bindNode(retrieveContextNode, deps))
-    .addNode("retrieve_memory", bindNode(retrieveMemoryNode, deps))
-    .addNode("build_prompt", bindNode(buildPromptNode, deps))
-    .addNode("call_llm_stream", bindNode(callLlmStreamNode, deps))
-    .addNode("validate_response", bindNode(validateResponseNode, deps))
-    .addNode("abort_invalid_response", bindNode(abortInvalidResponseNode, deps))
-    .addNode("save_message", bindNode(saveMessageNode, deps))
-    .addEdge(START, "prepare_turn")
-    .addEdge("prepare_turn", "extract_tags")
-    .addEdge("extract_tags", "retrieve_context")
-    .addEdge("retrieve_context", "retrieve_memory")
-    .addEdge("retrieve_memory", "build_prompt")
-    .addEdge("build_prompt", "call_llm_stream")
-    // 群聊下 agent 可自愿跳过：skip=true 时直接结束，不进入 validate/save
-    .addConditionalEdges("call_llm_stream", (state: ChatGraphState) =>
-      state.skip ? END : "validate_response",
-    )
-    .addConditionalEdges("validate_response", (state: ChatGraphState) => {
-      if (state.validationIssue && state.retryCount <= 1) {
-        return "retrieve_context";
-      }
-      if (state.validationIssue) {
-        return "abort_invalid_response";
-      }
-      return "save_message";
-    })
-    .addEdge("abort_invalid_response", END)
-    .addEdge("save_message", END);
-
-  return graph.compile();
+  return compileSingleChatGraph({
+    prepareTurn: bindNode(prepareTurnNode, deps), extractTags: bindNode(extractTagsNode, deps),
+    retrieveContext: bindNode(retrieveContextNode, deps), retrieveMemory: bindNode(retrieveMemoryNode, deps),
+    buildPrompt: bindNode(buildPromptNode, deps), callLlmStream: bindNode(callLlmStreamNode, deps),
+    validateResponse: bindNode(validateResponseNode, deps), abortInvalidResponse: bindNode(abortInvalidResponseNode, deps),
+    saveMessage: bindNode(saveMessageNode, deps),
+  });
 }

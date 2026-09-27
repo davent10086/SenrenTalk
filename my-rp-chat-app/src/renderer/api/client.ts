@@ -13,6 +13,7 @@ import type {
   UpdateGroupChatRoomRequest,
   PublicSettings,
   ChatMemorySnapshot,
+  CoreMemory,
 } from "../../common/types";
 import type { PendingAttachmentDraft } from "../types";
 
@@ -110,8 +111,8 @@ export async function dismissMemory(chatId: string, memoryId: string): Promise<v
 export async function deleteMemory(chatId: string, memoryId: string): Promise<void> {
   await readJsonResponse(await fetch(buildApiUrl(`/api/chats/${encodeURIComponent(chatId)}/memories/${encodeURIComponent(memoryId)}`), { method: "DELETE", headers: authHeaders() }));
 }
-export async function confirmCoreMemory(chatId: string, characterId: string): Promise<void> {
-  await readJsonResponse(await fetch(buildApiUrl(`/api/chats/${encodeURIComponent(chatId)}/memories/core/${encodeURIComponent(characterId)}/confirm`), { method: "POST", headers: authHeaders() }));
+export async function confirmCoreMemory(chatId: string, characterId: string, candidateId: string, core: Omit<CoreMemory, "id" | "chatId" | "character" | "lastUpdated">): Promise<void> {
+  await readJsonResponse(await fetch(buildApiUrl(`/api/chats/${encodeURIComponent(chatId)}/memories/core/${encodeURIComponent(characterId)}/confirm`), { method: "POST", headers: { ...authHeaders(), "Content-Type": "application/json" }, body: JSON.stringify({ candidateId, core }) }));
 }
 export async function dismissCoreMemory(chatId: string, characterId: string): Promise<void> {
   await readJsonResponse(await fetch(buildApiUrl(`/api/chats/${encodeURIComponent(chatId)}/memories/core/${encodeURIComponent(characterId)}/dismiss`), { method: "POST", headers: authHeaders() }));

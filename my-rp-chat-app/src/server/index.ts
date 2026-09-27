@@ -2,6 +2,9 @@ import express from "express";
 import multer from "multer";
 import fs from "node:fs/promises";
 import path from "node:path";
+import type { Server } from "node:http";
+import type { AddressInfo } from "node:net";
+import { fileURLToPath } from "node:url";
 import { ApiService } from "./api-service";
 import type {
   ChatMode,
@@ -123,22 +126,37 @@ function parseAttachmentMeta(value: unknown): AttachmentMetaPayload[] {
  * 6. 注册全局错误处理器
  * 7. 监听 SIGINT/SIGTERM 实现优雅关闭
  */
-async function main(): Promise<void> {
-  // 启动时检查环境变量
-  printConfigWarnings();
+export interface WebServerOptions {
+  appRoot?: string;
+  userDataPath?: string;
+  port?: number;
+  api?: ApiService;
+}
 
-  const appRoot = process.cwd();
-  const userDataPath = process.env.WEB_DATA_DIR
+export interface StartedWebServer {
+  api: ApiService;
+  server: Server;
+  baseUrl: string;
+  dispose: () => Promise<void>;
+}
+
+/** Starts the production HTTP surface and is intentionally injectable for black-box HTTP tests. */
+export async function startWebServer(options: WebServerOptions = {}): Promise<StartedWebServer> {
+  // 启动时检查环境变量
+  if (!options.api) printConfigWarnings();
+
+  const appRoot = options.appRoot ?? process.cwd();
+  const userDataPath = options.userDataPath ?? (process.env.WEB_DATA_DIR
     ? path.resolve(process.env.WEB_DATA_DIR)
-    : path.join(appRoot, ".web-data");
+    : path.join(appRoot, ".web-data"));
   const uploadDir = path.join(userDataPath, "uploads");
   await fs.mkdir(uploadDir, { recursive: true });
 
-  const api = new ApiService(appRoot, userDataPath);
-  await api.start();
+  const api = options.api ?? new ApiService(appRoot, userDataPath);
+  if (!options.api) await api.start();
 
   const app = express();
-  const port = Number.parseInt(process.env.PORT ?? "3001", 10);
+  const port = options.port ?? Number.parseInt(process.env.PORT ?? "3001", 10);
 
   // ── 中间件栈 ─────────────────────────
   // 顺序：CORS → 速率限制 → JSON 解析 → 上传校验
@@ -206,8 +224,10 @@ async function main(): Promise<void> {
     response.json({ ok: true });
   });
   app.post("/api/chats/:chatId/memories/core/:characterId/confirm", (request, response) => {
-    const core = api.confirmCoreMemory(readParam(request.params.chatId), readParam(request.params.characterId));
-    if (!core) throw Object.assign(new Error("Core memory candidate not found"), { statusCode: 404 });
+    const body = request.body as { candidateId?: string; core?: Parameters<typeof api.confirmCoreMemory>[3] };
+    if (!body?.candidateId || !body.core) throw Object.assign(new Error("候选 ID 和完整记忆内容必填"), { statusCode: 400 });
+    const core = api.confirmCoreMemory(readParam(request.params.chatId), readParam(request.params.characterId), body.candidateId, body.core);
+    if (!core) throw Object.assign(new Error("核心记忆候选已过期，请刷新"), { statusCode: 409 });
     response.json(core);
   });
   app.post("/api/chats/:chatId/memories/core/:characterId/dismiss", (request, response) => {
@@ -354,12 +374,15 @@ async function main(): Promise<void> {
   // 必须是最后一个 use()，且保持 4 个参数才能被 Express 识别为错误处理器
   app.use(createErrorHandler());
 
-  const server = app.listen(port, "127.0.0.1", () => {
-    console.log(`Web server ready at http://127.0.0.1:${port}`);
+  const server = await new Promise<Server>((resolve) => {
+    const listener = app.listen(port, "127.0.0.1", () => resolve(listener));
   });
+  const address = server.address() as AddressInfo;
+  const baseUrl = `http://127.0.0.1:${address.port}`;
+  console.log(`Web server ready at ${baseUrl}`);
 
   // ── 优雅关闭 ─────────────────────────
-  const shutdown = async () => {
+  const dispose = async () => {
     await api.dispose();
     await new Promise<void>((resolve, reject) => {
       server.close((error) => {
@@ -372,15 +395,19 @@ async function main(): Promise<void> {
     });
   };
 
-  process.on("SIGINT", () => {
-    void shutdown().finally(() => process.exit(0));
-  });
-  process.on("SIGTERM", () => {
-    void shutdown().finally(() => process.exit(0));
-  });
+  return { api, server, baseUrl, dispose };
 }
 
-void main().catch((error) => {
-  console.error(error);
-  process.exit(1);
-});
+async function main(): Promise<void> {
+  const started = await startWebServer();
+  const shutdown = () => void started.dispose().finally(() => process.exit(0));
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  void main().catch((error) => {
+    console.error(error);
+    process.exit(1);
+  });
+}

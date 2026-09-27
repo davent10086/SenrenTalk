@@ -108,7 +108,7 @@ export class ApiService {
   async confirmMemory(chatId: string, eventId: string) { return this.runtime.memoryService.confirmEvent(chatId, eventId); }
   dismissMemory(chatId: string, eventId: string) { return this.runtime.memoryService.dismissEvent(chatId, eventId); }
   deleteMemory(chatId: string, eventId: string) { return this.runtime.memoryService.deleteConfirmedEvent(chatId, eventId); }
-  confirmCoreMemory(chatId: string, characterId: string): CoreMemory | undefined { return this.runtime.memoryService.confirmCoreCandidate(chatId, characterId); }
+  confirmCoreMemory(chatId: string, characterId: string, candidateId: string, core: Omit<CoreMemory, "id" | "chatId" | "character" | "lastUpdated">): CoreMemory | undefined { return this.runtime.memoryService.confirmCoreCandidate(chatId, characterId, candidateId, core); }
   dismissCoreMemory(chatId: string, characterId: string): boolean { return this.runtime.memoryService.dismissCoreCandidate(chatId, characterId); }
 
   async regenerateMessageAudio(messageId: string): Promise<ChatMessage> {

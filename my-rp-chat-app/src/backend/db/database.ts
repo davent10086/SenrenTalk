@@ -3,6 +3,8 @@ import path from "node:path";
 import Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
 import { initDatabaseSchema } from "./schema";
+import { MemoryIndexOutboxRepository, type MemoryIndexOperation } from "./memory-index-outbox";
+import type { MemoryRepository } from "./memory-repository";
 import {
   createDefaultGroupChatRoomState,
   normalizeGroupChatRoomConfig,
@@ -138,7 +140,7 @@ interface MemoryRow {
  * 聊天数据仓库，封装所有与 SQLite 数据库的交互操作。
  * 管理角色信息、聊天记录、消息、记忆事件和核心记忆等数据。
  */
-export class ChatRepository {
+export class ChatRepository implements MemoryRepository {
   /**
    * 会话级摘要的 character_id 占位符。
    *
@@ -148,6 +150,7 @@ export class ChatRepository {
   static readonly CHAT_LEVEL_SUMMARY_KEY = "__chat__";
 
   private readonly db: Database.Database;
+  readonly memoryIndexOutbox: MemoryIndexOutboxRepository;
 
   /**
    * 创建 ChatRepository 实例并打开指定路径的 SQLite 数据库。
@@ -158,6 +161,7 @@ export class ChatRepository {
     this.db = new Database(databasePath);
     this.db.pragma("journal_mode = WAL");
     this.db.pragma("foreign_keys = ON");
+    this.memoryIndexOutbox = new MemoryIndexOutboxRepository(this.db);
   }
 
   /**
@@ -166,6 +170,24 @@ export class ChatRepository {
    */
   init(): void {
     initDatabaseSchema(this.db, ChatRepository.CHAT_LEVEL_SUMMARY_KEY);
+    this.upgradeLegacyFreeChatBudgets();
+  }
+
+  private upgradeLegacyFreeChatBudgets(): void {
+    const rows = this.db.prepare(
+      "SELECT id, participants_json, room_config_json FROM chats WHERE mode = 'group' AND room_config_json IS NOT NULL",
+    ).all() as Pick<ChatRow, "id" | "participants_json" | "room_config_json">[];
+    const update = this.db.prepare("UPDATE chats SET room_config_json = ? WHERE id = ?");
+    const migrate = this.db.transaction(() => {
+      for (const row of rows) {
+        const participants = parseJson<string[]>(row.participants_json, []);
+        const config = parseJson<Partial<GroupChatRoomConfig> | undefined>(row.room_config_json, undefined);
+        const oldLimit = Math.max(1, participants.length);
+        if (config?.mode !== "free_chat" || config.maxRounds !== 1 || config.maxMessages !== oldLimit) continue;
+        update.run(JSON.stringify({ ...config, maxRounds: 2, maxMessages: oldLimit * 2 }), row.id);
+      }
+    });
+    migrate();
   }
 
   /**
@@ -585,12 +607,15 @@ export class ChatRepository {
    */
   deleteChat(chatId: string): void {
     this.db.transaction(() => {
+      this.memoryIndexOutbox.queueDeleteSession(chatId);
       this.db.prepare("DELETE FROM messages WHERE chat_id = ?").run(chatId);
       this.db.prepare("DELETE FROM memory_events WHERE chat_id = ?").run(chatId);
       this.db.prepare("DELETE FROM memory_summaries WHERE chat_id = ?").run(chatId);
       this.db.prepare("DELETE FROM core_memories WHERE chat_id = ?").run(chatId);
       this.db.prepare("DELETE FROM core_memory_candidates WHERE chat_id = ?").run(chatId);
       this.db.prepare("DELETE FROM memory_consolidation_state WHERE chat_id = ?").run(chatId);
+      this.db.prepare("DELETE FROM memory_source_tombstones WHERE chat_id = ?").run(chatId);
+      this.db.prepare("DELETE FROM memory_generation_epochs WHERE chat_id = ?").run(chatId);
       this.db.prepare("DELETE FROM chats WHERE id = ?").run(chatId);
     })();
   }
@@ -601,18 +626,22 @@ export class ChatRepository {
    */
   clearMessages(chatId: string): void {
     this.db.transaction(() => {
+      this.memoryIndexOutbox.queueDeleteSession(chatId);
       this.db.prepare("DELETE FROM messages WHERE chat_id = ?").run(chatId);
       this.db.prepare("DELETE FROM memory_events WHERE chat_id = ?").run(chatId);
       this.db.prepare("DELETE FROM memory_summaries WHERE chat_id = ?").run(chatId);
       this.db.prepare("DELETE FROM core_memories WHERE chat_id = ?").run(chatId);
       this.db.prepare("DELETE FROM core_memory_candidates WHERE chat_id = ?").run(chatId);
       this.db.prepare("DELETE FROM memory_consolidation_state WHERE chat_id = ?").run(chatId);
+      this.db.prepare("DELETE FROM memory_source_tombstones WHERE chat_id = ?").run(chatId);
+      this.db.prepare("DELETE FROM memory_generation_epochs WHERE chat_id = ?").run(chatId);
       this.touchChat(chatId);
     })();
   }
 
   clearMemories(chatId: string): void {
     this.db.transaction(() => {
+      this.memoryIndexOutbox.queueDeleteSession(chatId);
       this.db.prepare("DELETE FROM memory_events WHERE chat_id = ?").run(chatId);
       this.db.prepare("DELETE FROM memory_summaries WHERE chat_id = ?").run(chatId);
       this.db.prepare("DELETE FROM core_memories WHERE chat_id = ?").run(chatId);
@@ -653,6 +682,27 @@ export class ChatRepository {
        VALUES (@id, @chat_id, @character_id, @summary, @created_at)
        ON CONFLICT(chat_id, character_id) DO UPDATE SET summary = excluded.summary, created_at = excluded.created_at`,
     ).run({ id: randomUUID(), chat_id: chatId, character_id: key, summary, created_at: Date.now() });
+  }
+
+  getMemoryEpoch(chatId: string, characterId: string): number {
+    return (this.db.prepare("SELECT epoch FROM memory_generation_epochs WHERE chat_id = ? AND character_id = ?")
+      .get(chatId, characterId) as { epoch: number } | undefined)?.epoch ?? 0;
+  }
+
+  private bumpMemoryEpoch(chatId: string, characterId: string): void {
+    this.db.prepare(`INSERT INTO memory_generation_epochs (chat_id, character_id, epoch) VALUES (?, ?, 1)
+      ON CONFLICT(chat_id, character_id) DO UPDATE SET epoch = epoch + 1`).run(chatId, characterId);
+  }
+
+  saveSummaryIfSourceCurrent(chatId: string, characterId: string, summary: string, messages: ChatMessage[], expectedEpoch: number): boolean {
+    return this.db.transaction(() => {
+      if (!this.getChat(chatId) || this.getMemoryEpoch(chatId, characterId) !== expectedEpoch || messages.some((message) => {
+        const current = this.getMessage(message.id);
+        return !current || current.chatId !== chatId || current.content !== message.content;
+      })) return false;
+      this.saveSummary(chatId, summary, characterId);
+      return true;
+    })();
   }
 
   /**
@@ -699,6 +749,60 @@ export class ChatRepository {
       recorded_at: event.recordedAt ?? event.timestamp, sequence,
       supersedes_event_id: event.supersedesEventId ?? null, fact_key: event.factKey ?? null,
     });
+  }
+
+  saveMemoryIfSourceCurrent(event: MemoryEvent, sourceContent: string, expectedEpoch: number): MemoryEvent | undefined {
+    return this.db.transaction(() => {
+      if (this.getMemoryEpoch(event.chatId, event.character) !== expectedEpoch) return undefined;
+      const tombstone = this.db.prepare("SELECT 1 FROM memory_source_tombstones WHERE chat_id = ? AND character_id = ? AND source_message_id = ?")
+        .get(event.chatId, event.character, event.sourceMessageId);
+      if (tombstone) return undefined;
+      const source = this.db.prepare("SELECT content FROM messages WHERE id = ? AND chat_id = ? AND role = 'assistant' AND role_id = ?")
+        .get(event.sourceMessageId, event.chatId, event.character) as { content: string } | undefined;
+      if (!source || source.content !== sourceContent || !this.getChat(event.chatId)) return undefined;
+      const existing = this.db.prepare("SELECT id FROM memory_events WHERE chat_id = ? AND character = ? AND source_message_id = ?")
+        .get(event.chatId, event.character, event.sourceMessageId) as { id: string } | undefined;
+      if (existing) return this.getMemoryEvent(event.chatId, existing.id);
+      this.saveMemory(event);
+      return event;
+    })();
+  }
+
+  getRecallableEvents(chatId: string, character: string | undefined, ids: string[]): Map<string, MemoryEvent> {
+    if (!ids.length) return new Map();
+    const placeholders = ids.map(() => "?").join(",");
+    const rows = this.db.prepare(`SELECT * FROM memory_events WHERE chat_id = ? AND id IN (${placeholders}) AND status = 'confirmed'
+      AND temporal_state NOT IN ('superseded', 'cancelled') ${character ? "AND character = ?" : ""}`)
+      .all(chatId, ...ids, ...(character ? [character] : [])) as MemoryRow[];
+    return new Map(rows.map((row) => [row.id, {
+      id: row.id, chatId: row.chat_id, sessionId: row.session_id, character: row.character, content: row.content, category: row.category,
+      timestamp: row.timestamp, tags: parseJson<string[]>(row.tags_json, []), sourceMessageId: row.source_message_id ?? undefined,
+      summary: row.summary ?? undefined, emotion: row.emotion ?? undefined, importance: row.importance ?? undefined,
+      keyPoints: row.key_points_json ? parseJson<string[]>(row.key_points_json, []) : undefined, status: row.status,
+      eventType: row.event_type, temporalState: row.temporal_state, occurredAt: row.occurred_at ?? undefined,
+      recordedAt: row.recorded_at ?? undefined, sequence: row.sequence, supersedesEventId: row.supersedes_event_id ?? undefined,
+      factKey: row.fact_key ?? undefined,
+    } satisfies MemoryEvent]));
+  }
+
+  clearDerivedMemory(chatId: string, character: string): void {
+    this.db.prepare("DELETE FROM core_memories WHERE chat_id = ? AND character_id = ?").run(chatId, character);
+    this.db.prepare("DELETE FROM core_memory_candidates WHERE chat_id = ? AND character_id = ?").run(chatId, character);
+    this.db.prepare("DELETE FROM memory_consolidation_state WHERE chat_id = ? AND character_id = ?").run(chatId, character);
+    this.db.prepare("DELETE FROM memory_summaries WHERE chat_id = ? AND character_id = ?").run(chatId, character);
+  }
+
+  deleteConfirmedMemory(chatId: string, id: string): MemoryEvent | undefined {
+    return this.db.transaction(() => {
+      const event = this.getMemoryEvent(chatId, id);
+      if (event?.status !== "confirmed") return undefined;
+      this.db.prepare("DELETE FROM memory_events WHERE chat_id = ? AND id = ?").run(chatId, id);
+      if (event.sourceMessageId) this.db.prepare("INSERT OR IGNORE INTO memory_source_tombstones (chat_id, character_id, source_message_id) VALUES (?, ?, ?)")
+        .run(chatId, event.character, event.sourceMessageId);
+      this.clearDerivedMemory(chatId, event.character);
+      this.bumpMemoryEpoch(chatId, event.character);
+      return event;
+    })();
   }
 
   listMemoryEvents(chatId: string, limit = 20, character?: string): MemoryEvent[] {
@@ -777,13 +881,17 @@ export class ChatRepository {
     if (messageIds.length === 0) return [];
     const placeholders = messageIds.map(() => "?").join(",");
     const rows = this.db.prepare(`SELECT DISTINCT character FROM memory_events WHERE chat_id = ? AND source_message_id IN (${placeholders})`).all(chatId, ...messageIds) as Array<{ character: string }>;
+    const participants = this.getChat(chatId)?.participants ?? [];
     this.db.transaction(() => {
       this.db.prepare(`DELETE FROM memory_events WHERE chat_id = ? AND source_message_id IN (${placeholders})`).run(chatId, ...messageIds);
       rows.forEach(({ character }) => {
-        this.db.prepare("DELETE FROM core_memory_candidates WHERE chat_id = ? AND character_id = ?").run(chatId, character);
-        this.db.prepare("DELETE FROM core_memories WHERE chat_id = ? AND character_id = ?").run(chatId, character);
-        this.db.prepare("DELETE FROM memory_consolidation_state WHERE chat_id = ? AND character_id = ?").run(chatId, character);
+        this.clearDerivedMemory(chatId, character);
       });
+      this.db.prepare("DELETE FROM memory_summaries WHERE chat_id = ?").run(chatId);
+      new Set([...participants, ...rows.map(({ character }) => character)]).forEach((character) => this.bumpMemoryEpoch(chatId, character));
+      const active = this.listTimelineEvents(chatId, undefined, "confirmed")
+        .filter((event) => event.temporalState !== "superseded" && event.temporalState !== "cancelled");
+      this.memoryIndexOutbox.queueSessionResync(chatId, active);
     })();
     return rows.map((row) => row.character);
   }
@@ -800,15 +908,72 @@ export class ChatRepository {
     return chats.map((chat) => chat.id);
   }
 
+  /** Queue a one-time reconciliation for databases created before the durable ES outbox. */
+  seedMemoryIndexOutboxOnce(): void {
+    const key = "memory_index_outbox_v1";
+    if (this.db.prepare("SELECT 1 FROM app_metadata WHERE key = ?").get(key)) return;
+    this.db.transaction(() => {
+      this.listChats().forEach((chat) => {
+        const events = this.listTimelineEvents(chat.id, undefined, "confirmed")
+          .filter((event) => event.temporalState !== "superseded" && event.temporalState !== "cancelled");
+        events.forEach((event) => this.memoryIndexOutbox.queueUpsert(event));
+      });
+      this.db.prepare("INSERT INTO app_metadata (key, value) VALUES (?, '1')").run(key);
+    })();
+  }
+
+  listMemoryIndexOperations(limit = 100): MemoryIndexOperation[] {
+    return this.memoryIndexOutbox.list(limit);
+  }
+
+  acknowledgeMemoryIndexOperations(ids: number[]): void {
+    this.memoryIndexOutbox.acknowledge(ids);
+  }
+
+  getIndexableMemoryEvent(chatId: string, eventId: string): MemoryEvent | undefined {
+    const event = this.getMemoryEvent(chatId, eventId);
+    return event?.status === "confirmed" && event.temporalState !== "superseded" && event.temporalState !== "cancelled"
+      ? event
+      : undefined;
+  }
+
   saveCoreCandidate(candidate: CoreMemoryCandidate): void {
-    this.db.prepare(`INSERT INTO core_memory_candidates (id, chat_id, character_id, core_json, source_sequence, created_at)
-      VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(chat_id, character_id) DO UPDATE SET id=excluded.id, core_json=excluded.core_json, source_sequence=excluded.source_sequence, created_at=excluded.created_at`)
-      .run(candidate.id, candidate.chatId, candidate.character, JSON.stringify(candidate.core), candidate.sourceSequence, candidate.createdAt);
+    this.db.prepare(`INSERT INTO core_memory_candidates (id, chat_id, character_id, core_json, source_sequence, source_event_ids_json, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(chat_id, character_id) DO UPDATE SET id=excluded.id, core_json=excluded.core_json, source_sequence=excluded.source_sequence, source_event_ids_json=excluded.source_event_ids_json, created_at=excluded.created_at`)
+      .run(candidate.id, candidate.chatId, candidate.character, JSON.stringify(candidate.core), candidate.sourceSequence, JSON.stringify(candidate.sourceEventIds), candidate.createdAt);
+  }
+
+  saveCoreCandidateIfCurrent(candidate: CoreMemoryCandidate, expectedCursor: number): boolean {
+    return this.db.transaction(() => {
+      if (this.getConsolidationSequence(candidate.chatId, candidate.character) !== expectedCursor ||
+          this.getCoreCandidate(candidate.chatId, candidate.character)) return false;
+      const events = this.getRecallableEvents(candidate.chatId, candidate.character, candidate.sourceEventIds);
+      const nextIds = this.listTimelineEvents(candidate.chatId, candidate.character, "confirmed")
+        .filter((event) => event.temporalState !== "superseded" && event.temporalState !== "cancelled" && (event.sequence ?? 0) > expectedCursor)
+        .sort((left, right) => (left.sequence ?? 0) - (right.sequence ?? 0)).slice(0, 5).map((event) => event.id);
+      if (events.size !== candidate.sourceEventIds.length || candidate.sourceEventIds.length !== 5 ||
+          nextIds.some((id) => !candidate.sourceEventIds.includes(id)) ||
+          Math.max(...[...events.values()].map((event) => event.sequence ?? 0)) !== candidate.sourceSequence) return false;
+      this.saveCoreCandidate(candidate);
+      return true;
+    })();
+  }
+
+  confirmCoreCandidateAtomic(chatId: string, characterId: string, candidateId: string, core: CoreMemory): CoreMemory | undefined {
+    return this.db.transaction(() => {
+      const candidate = this.getCoreCandidate(chatId, characterId);
+      if (!candidate || candidate.id !== candidateId || this.getConsolidationSequence(chatId, characterId) >= candidate.sourceSequence ||
+          candidate.sourceEventIds.length !== 5 || this.getRecallableEvents(chatId, characterId, candidate.sourceEventIds).size !== 5) return undefined;
+      this.saveCoreMemory(core);
+      this.setConsolidationSequence(chatId, characterId, candidate.sourceSequence);
+      this.deleteCoreCandidate(chatId, characterId);
+      return core;
+    })();
   }
 
   getCoreCandidate(chatId: string, characterId: string): CoreMemoryCandidate | undefined {
-    const row = this.db.prepare("SELECT * FROM core_memory_candidates WHERE chat_id = ? AND character_id = ?").get(chatId, characterId) as { id: string; chat_id: string; character_id: string; core_json: string; source_sequence: number; created_at: number } | undefined;
-    return row ? { id: row.id, chatId: row.chat_id, character: row.character_id, core: parseJson<CoreMemory>(row.core_json, {} as CoreMemory), sourceSequence: row.source_sequence, createdAt: row.created_at } : undefined;
+    const row = this.db.prepare("SELECT * FROM core_memory_candidates WHERE chat_id = ? AND character_id = ?").get(chatId, characterId) as { id: string; chat_id: string; character_id: string; core_json: string; source_sequence: number; source_event_ids_json: string; created_at: number } | undefined;
+    return row ? { id: row.id, chatId: row.chat_id, character: row.character_id, core: parseJson<CoreMemory>(row.core_json, {} as CoreMemory), sourceSequence: row.source_sequence, sourceEventIds: parseJson<string[]>(row.source_event_ids_json, []), createdAt: row.created_at } : undefined;
   }
 
   listCoreCandidates(chatId: string): CoreMemoryCandidate[] {

@@ -79,6 +79,7 @@ async function createRuntimeWithMocks(options: {
   // （ES_ENABLED 默认为 true，无密码也会创建客户端，需要在 start() 调用前拦截）
   Object.assign(runtime.elasticsearchService, {
     ensureMemoryIndex: vi.fn().mockResolvedValue(undefined),
+    rebuildMemoryIndex: vi.fn().mockResolvedValue(undefined),
     ensureDialogueIndex: vi.fn().mockResolvedValue(undefined),
   });
 
@@ -159,6 +160,48 @@ afterEach(async () => {
 });
 
 describe("AppRuntime.sendMessage", () => {
+  it("rejects invalid directed targets before saving the user message", async () => {
+    const { runtime, repository } = await createRuntimeWithMocks({
+      characters: [createCharacter("芳乃"), createCharacter("茉子")],
+    });
+    const chat = runtime.createChat("group", ["芳乃", "茉子"], "测试群聊");
+    await expect(runtime.sendMessage({
+      chatId: chat.id, content: "你好", mode: "group", participants: ["芳乃", "茉子"],
+      targetRoleId: "丛雨",
+    })).rejects.toThrow("定向回复的角色不属于当前房间");
+    expect(repository.listMessages(chat.id)).toHaveLength(0);
+    await runtime.dispose();
+  });
+
+  it("requires an in-room host when creating or updating host rooms", async () => {
+    const { runtime, repository } = await createRuntimeWithMocks({
+      characters: [createCharacter("芳乃"), createCharacter("茉子")],
+    });
+    expect(() => runtime.createChat("group", ["芳乃", "茉子"], "测试群聊", {
+      mode: "host_mode",
+    })).toThrow("必须选择房间内的主持角色");
+    expect(() => runtime.createChat("group", ["芳乃", "茉子"], "测试群聊", {
+      mode: "host_mode", hostRoleId: "丛雨",
+    })).toThrow("必须选择房间内的主持角色");
+    const chat = runtime.createChat("group", ["芳乃", "茉子"], "测试群聊");
+    expect(() => runtime.updateGroupChatRoom(chat.id, {
+      roomConfig: { mode: "host_mode" },
+    })).toThrow("必须选择房间内的主持角色");
+    expect(() => runtime.updateGroupChatRoom(chat.id, {
+      roomConfig: { mode: "host_mode", hostRoleId: "丛雨" },
+    })).toThrow("必须选择房间内的主持角色");
+    expect(repository.getChat(chat.id)?.roomConfig?.mode).toBe("single_round");
+    expect(runtime.updateGroupChatRoom(chat.id, {
+      roomConfig: { mode: "host_mode", hostRoleId: "茉子" },
+    }).roomConfig?.hostRoleId).toBe("茉子");
+    repository.updateChatRoomConfig(chat.id, { hostRoleId: null });
+    await expect(runtime.sendMessage({
+      chatId: chat.id, content: "你好", mode: "group", participants: ["芳乃", "茉子"],
+    })).rejects.toThrow("请先为主持模式选择房间内的主持角色");
+    expect(repository.listMessages(chat.id)).toHaveLength(0);
+    await runtime.dispose();
+  });
+
   it("throws when chat does not exist", async () => {
     const { runtime } = await createRuntimeWithMocks({
       characters: [createCharacter("芳乃")],

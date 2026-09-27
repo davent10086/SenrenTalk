@@ -1,58 +1,25 @@
 import OpenAI from "openai";
 import type { AppConfig } from "../../config";
+import type {
+  CompletionRequest,
+  ImageIdentityCandidate,
+  ImageInput,
+  SpeechTextRequest,
+  StructuredCompletionRequest,
+  StructuredCompletionResult,
+} from "./llm-types";
+export type {
+  CompletionRequest,
+  ImageIdentityCandidate,
+  ImageInput,
+  SpeechTextRequest,
+  StructuredCompletionRequest,
+  StructuredCompletionResult,
+} from "./llm-types";
 
 /**
  * 多模态图片输入，用于将用户发送的图片传递给视觉 LLM。
  */
-export interface ImageInput {
-  mimeType: string;
-  base64: string;
-}
-
-/**
- * 标准补全请求参数，用于流式调用 LLM 生成回复。
- */
-export interface CompletionRequest {
-  systemPrompt: string;
-  userPrompt: string;
-  onToken: (token: string) => Promise<void> | void;
-  signal?: AbortSignal;
-}
-
-/**
- * 结构化补全请求参数，继承自 {@link CompletionRequest}，要求 LLM 以 JSON 格式输出。
- * 可选的 images 字段用于传递多模态图片输入。
- */
-export interface StructuredCompletionRequest extends CompletionRequest {
-  /** 用户发送的图片附件，传入后 LLM 可识别图片内容。 */
-  images?: ImageInput[];
-}
-
-/**
- * 结构化补全结果，包含中文展示内容、日语朗读稿、可选的下一说话人及跳过标志。
- */
-export interface StructuredCompletionResult {
-  content: string;
-  speechTextJa: string;
-  nextSpeaker?: string;
-  /** 群聊下 agent 可自愿跳过本次发言，此时 content/speechTextJa 为空。 */
-  skip?: boolean;
-  raw: string;
-}
-
-export interface ImageIdentityCandidate {
-  canonicalName: string;
-  identity: string;
-}
-
-/**
- * 日语朗读稿生成请求参数。
- */
-export interface SpeechTextRequest {
-  characterName: string;
-  selfAddress: string;
-  content: string;
-}
 
 /**
  * 从原始 JSON 文本中提取字符串字段的中间结果。

@@ -13,6 +13,7 @@ import type {
   TagCollection,
 } from "../../../common/types";
 import { BgeM3EmbeddingService } from "./bge-m3-embedding-service";
+import type { MemoryIndexOperation } from "../../db/memory-index-outbox";
 
 /**
  * 高频标签黑名单：这些标签在数据集中出现频率超过60%，缺乏区分度，
@@ -516,6 +517,42 @@ export class ElasticsearchService {
         },
       },
     });
+  }
+
+  async rebuildMemoryIndex(events: MemoryEvent[]): Promise<void> {
+    if (!this.client) return;
+    await this.ensureMemoryIndex();
+    await this.client.deleteByQuery({ index: this.config.esMemoryIndex, refresh: true, conflicts: "proceed", query: { term: { record_type: "memory" } } });
+    for (const event of events) await this.indexMemory(event);
+  }
+
+  /** Applies a durable outbox batch with one refresh, rather than rebuilding the whole index. */
+  async applyMemoryIndexOperations(operations: Array<MemoryIndexOperation & { event?: MemoryEvent }>): Promise<void> {
+    if (!this.client || operations.length === 0) return;
+    await this.ensureMemoryIndex();
+    const sessionDeletes = [...new Set(operations.filter((operation) => operation.kind === "delete-session").map((operation) => operation.chatId))];
+    for (const chatId of sessionDeletes) {
+      await this.client.deleteByQuery({ index: this.config.esMemoryIndex, refresh: false, conflicts: "proceed", query: { term: { session_id: chatId } } });
+    }
+    const documentOperations: estypes.BulkOperationContainer[] = [];
+    for (const operation of operations) {
+      if (operation.kind === "delete-session") continue;
+      if (operation.kind === "delete" || !operation.event) {
+        documentOperations.push({ delete: { _index: this.config.esMemoryIndex, _id: operation.eventId } });
+        continue;
+      }
+      const denseVector = await this.tryEmbed(operation.event.content, "memory-index");
+      documentOperations.push({ index: { _index: this.config.esMemoryIndex, _id: operation.event.id } });
+      documentOperations.push({
+        source_id: operation.event.id, record_type: "memory", status: operation.event.status ?? "confirmed",
+        session_id: operation.event.sessionId, character: operation.event.character, content: operation.event.content,
+        category: operation.event.category, timestamp: operation.event.timestamp, tags: operation.event.tags,
+        ...(denseVector ? { dense_vector: denseVector } : {}),
+      } as never);
+    }
+    if (!documentOperations.length) return;
+    const result = await this.client.bulk({ operations: documentOperations, refresh: true });
+    if (result.errors) throw new Error("Elasticsearch memory bulk operation failed");
   }
 
   async deleteMemory(id: string): Promise<void> {

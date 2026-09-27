@@ -140,6 +140,22 @@ describe("ChatRepository", () => {
     repository.close();
   });
 
+  it("coalesces durable memory index work and lets a session deletion supersede its event work", () => {
+    const { repository } = createRepository("rp-chat-db-outbox-");
+    repository.upsertCharacters([createCharacter("丛雨")]);
+    const chat = repository.createChat("single", ["丛雨"], "单聊");
+    const event = createMemoryEvent(chat.id, "丛雨", { id: "event-1", status: "confirmed" });
+    repository.saveMemory(event);
+
+    repository.memoryIndexOutbox.queueUpsert(event);
+    repository.memoryIndexOutbox.queueDelete(chat.id, event.id);
+    expect(repository.listMemoryIndexOperations()).toMatchObject([{ kind: "delete", eventId: event.id }]);
+
+    repository.memoryIndexOutbox.queueDeleteSession(chat.id);
+    expect(repository.listMemoryIndexOperations()).toMatchObject([{ kind: "delete-session", chatId: chat.id }]);
+    repository.close();
+  });
+
   it("init is idempotent and migrates legacy memory_events columns", () => {
     const tempDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "rp-chat-db-migrate-"));
     createdDirectories.push(tempDirectory);

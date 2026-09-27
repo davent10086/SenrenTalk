@@ -108,16 +108,21 @@ export function ChatProvider({ children }: { children: ReactNode }) {
     };
     setMessages((prev) => [...prev, optimisticMessage]);
 
-    await streamSend({
-      chatId: activeChat.id,
-      content: normalizedContent,
-      mode: activeChat.mode,
-      participants: activeChat.participants,
-      mentionTarget: mentionTarget ?? null,
-      targetRoleId: mentionTarget ?? activeChat.roomConfig?.targetRoleId ?? null,
-      attachments,
-    });
-  }, [activeChat, streamSend]);
+    try {
+      await streamSend({
+        chatId: activeChat.id,
+        content: normalizedContent,
+        mode: activeChat.mode,
+        participants: activeChat.participants,
+        mentionTarget: mentionTarget ?? null,
+        targetRoleId: mentionTarget ?? activeChat.roomConfig?.targetRoleId ?? null,
+        attachments,
+      });
+    } catch (error) {
+      await refreshMessages();
+      throw error;
+    }
+  }, [activeChat, refreshMessages, streamSend]);
 
   const updateGroupChatRoom = useCallback(async (
     updates: { roomConfig?: Partial<GroupChatRoomConfig>; roomState?: Partial<GroupChatRoomState> },

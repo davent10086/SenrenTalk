@@ -62,6 +62,7 @@ export function initDatabaseSchema(db: Database.Database, chatLevelSummaryKey: s
       character_id TEXT NOT NULL,
       core_json TEXT NOT NULL,
       source_sequence INTEGER NOT NULL,
+      source_event_ids_json TEXT NOT NULL DEFAULT '[]',
       created_at INTEGER NOT NULL,
       UNIQUE(chat_id, character_id),
       FOREIGN KEY(chat_id) REFERENCES chats(id)
@@ -74,6 +75,29 @@ export function initDatabaseSchema(db: Database.Database, chatLevelSummaryKey: s
       PRIMARY KEY(chat_id, character_id),
       FOREIGN KEY(chat_id) REFERENCES chats(id)
     );
+
+    CREATE TABLE IF NOT EXISTS memory_source_tombstones (
+      chat_id TEXT NOT NULL,
+      character_id TEXT NOT NULL,
+      source_message_id TEXT NOT NULL,
+      PRIMARY KEY(chat_id, character_id, source_message_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS memory_generation_epochs (
+      chat_id TEXT NOT NULL,
+      character_id TEXT NOT NULL,
+      epoch INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY(chat_id, character_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS memory_index_outbox (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      kind TEXT NOT NULL CHECK(kind IN ('upsert', 'delete', 'delete-session')),
+      chat_id TEXT NOT NULL,
+      event_id TEXT NOT NULL UNIQUE,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_memory_index_outbox_created ON memory_index_outbox(created_at, id);
 
     CREATE TABLE IF NOT EXISTS app_metadata (
       key TEXT PRIMARY KEY,
@@ -111,6 +135,19 @@ export function initDatabaseSchema(db: Database.Database, chatLevelSummaryKey: s
   `);
 
   ensureMemoryEventColumns(db);
+  const candidateColumns = new Set((db.prepare("PRAGMA table_info(core_memory_candidates)").all() as Array<{ name: string }>).map((column) => column.name));
+  if (!candidateColumns.has("source_event_ids_json")) {
+    db.exec("ALTER TABLE core_memory_candidates ADD COLUMN source_event_ids_json TEXT NOT NULL DEFAULT '[]'");
+    db.exec("DELETE FROM core_memory_candidates");
+  }
+  db.exec(`DELETE FROM memory_events WHERE rowid IN (
+    SELECT rowid FROM (
+      SELECT rowid, ROW_NUMBER() OVER (PARTITION BY chat_id, character, source_message_id
+        ORDER BY CASE status WHEN 'confirmed' THEN 0 WHEN 'pending' THEN 1 ELSE 2 END, rowid) AS rank
+      FROM memory_events WHERE source_message_id IS NOT NULL
+    ) WHERE rank > 1
+  )`);
+  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_source ON memory_events(chat_id, character, source_message_id) WHERE source_message_id IS NOT NULL");
   db.exec("CREATE INDEX IF NOT EXISTS idx_memory_events_timeline ON memory_events(chat_id, character, status, occurred_at, sequence);");
   ensureChatColumns(db);
   migrateMemorySummariesForCharacterIsolation(db, chatLevelSummaryKey);
