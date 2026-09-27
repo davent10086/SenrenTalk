@@ -10,6 +10,7 @@ export type GroupChatGenerationReason =
   | "scheduled"
   | "nominated"
   | "host_prompted"
+  | "host_closing"
   | "retry_rewrite"
   | "skipped";
 export type GroupChatSkipReason =
@@ -440,7 +441,9 @@ export function createGroupChatRoomConfigForMode(
   const defaults = createDefaultGroupChatRoomConfig(participantCount);
   return mode === "free_chat"
     ? { ...defaults, mode, maxRounds: 2, maxMessages: Math.max(1, participantCount) * 2 }
-    : { ...defaults, mode };
+    : mode === "host_mode"
+      ? { ...defaults, mode, maxMessages: Math.max(1, participantCount) + 1 }
+      : { ...defaults, mode };
 }
 
 export function normalizeGroupChatRoomConfig(

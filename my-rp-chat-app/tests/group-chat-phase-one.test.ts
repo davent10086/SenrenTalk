@@ -31,7 +31,12 @@ function repository() {
   return { db, directory };
 }
 
-async function run(config: Partial<GroupChatRoomConfig>, mentionTarget: string | null = null) {
+async function run(
+  config: Partial<GroupChatRoomConfig>,
+  mentionTarget: string | null = null,
+  responseFor?: (roleId: string, call: number, prompt: string) => { content?: string; nextSpeaker?: string; skip?: boolean },
+  signal?: AbortSignal,
+) {
   const { db } = repository();
   const chat = db.createChat("group", roles, "群聊", config);
   db.appendMessage({ chatId: chat.id, role: "user", content: "大家好" });
@@ -39,13 +44,16 @@ async function run(config: Partial<GroupChatRoomConfig>, mentionTarget: string |
   const publish = vi.fn();
   const coordinator = new GroupChatCoordinator({
     repository: db,
+    abortSignal: signal,
     characterService: {} as never,
     elasticsearchService: { hybridSearch: vi.fn().mockResolvedValue([]) } as never,
     llmService: {
-      streamStructuredCompletion: vi.fn().mockImplementation(async ({ onToken }: StructuredCompletionRequest) => {
-        const content = `我回应第${++generated}次`;
-        await onToken(content);
-        return { content, speechTextJa: "", raw: "{}" };
+      streamStructuredCompletion: vi.fn().mockImplementation(async ({ systemPrompt, onToken }: StructuredCompletionRequest) => {
+        const roleId = systemPrompt.match(/当前角色：([^\n]+)/)?.[1] ?? "";
+        const reply = responseFor?.(roleId, ++generated, systemPrompt) ?? {};
+        const content = reply.content ?? `我回应第${generated}次`;
+        if (!reply.skip) await onToken(content);
+        return { content, speechTextJa: "", raw: "{}", nextSpeaker: reply.nextSpeaker, skip: reply.skip };
       }),
     } as never,
     memoryService: {
@@ -55,10 +63,15 @@ async function run(config: Partial<GroupChatRoomConfig>, mentionTarget: string |
     } as never,
     sseService: { publish } as never,
   }, chat.roomConfig, 2, 0);
-  await coordinator.runSession({
-    chatId: chat.id, streamId: "test-stream", participants: roles, mentionTarget,
-    messages: db.listMessages(chat.id),
-  });
+  try {
+    await coordinator.runSession({
+      chatId: chat.id, streamId: "test-stream", participants: roles, mentionTarget,
+      messages: db.listMessages(chat.id),
+    });
+  } catch (error) {
+    db.close();
+    throw error;
+  }
   const messages = db.listMessages(chat.id).filter((message) => message.role === "assistant");
   return { db, messages, publish };
 }
@@ -84,13 +97,13 @@ describe("current group coordinator room modes", () => {
     }
   });
 
-  it("keeps normal single round participation and gives free chat two rounds", async () => {
+  it("keeps normal single round participation and ends free chat without nominations", async () => {
     const single = await run({ mode: "single_round" });
     expect(single.messages.map((message) => message.roleId)).toEqual(roles);
     single.db.close();
 
     const free = await run({ mode: "free_chat" });
-    expect(free.messages.map((message) => message.roleId)).toEqual([...roles, ...roles]);
+    expect(free.messages.map((message) => message.roleId)).toEqual(roles);
     free.db.close();
   });
 
@@ -98,6 +111,101 @@ describe("current group coordinator room modes", () => {
     const { db, messages } = await run({ mode: "host_mode", hostRoleId: "茉子" });
     expect(messages[0]?.roleId).toBe("茉子");
     db.close();
+  });
+
+  it("immediately follows a valid nomination and records the actual reply target", async () => {
+    const { db, messages, publish } = await run({ mode: "free_chat" }, null,
+      (roleId) => ({ nextSpeaker: roleId === "芳乃" ? "丛雨" : undefined }));
+    expect(messages.map((message) => message.roleId)).toEqual(["芳乃", "丛雨", "茉子"]);
+    expect(messages[1].metadata).toMatchObject({
+      replyToMessageId: messages[0].id, replyToRoleId: "芳乃", generationReason: "nominated",
+    });
+    expect(publish.mock.calls.filter(([event]) => event.type === "round_plan")
+      .map(([event]) => event.plannedSpeakers[0])).toEqual(["芳乃", "丛雨", "茉子"]);
+    db.close();
+  });
+
+  it("ignores self and out-of-room nominations and falls back to the remaining roles", async () => {
+    const { db, messages } = await run({ mode: "free_chat" }, null,
+      (roleId) => ({ nextSpeaker: roleId === "芳乃" ? "芳乃" : "路人" }));
+    expect(messages.map((message) => message.roleId)).toEqual(roles);
+    db.close();
+  });
+
+  it("defers a nomination of an already attempted role to the next round", async () => {
+    const { db, messages } = await run({ mode: "free_chat" }, null,
+      (roleId, call) => ({ nextSpeaker: roleId === "茉子" && call === 2 ? "芳乃" : undefined }));
+    expect(messages.map((message) => message.roleId).slice(0, 4)).toEqual(["芳乃", "茉子", "丛雨", "芳乃"]);
+    expect(messages[3].metadata).toMatchObject({ round: 2, generationReason: "nominated" });
+    db.close();
+  });
+
+  it("lets any participant nominate in host mode and gives the host one optional closing turn", async () => {
+    const { db, messages, publish } = await run({ mode: "host_mode", hostRoleId: "茉子" }, null,
+      (roleId) => ({ nextSpeaker: roleId === "芳乃" ? "丛雨" : undefined }));
+    expect(messages.map((message) => message.roleId)).toEqual(["茉子", "芳乃", "丛雨", "茉子"]);
+    expect(messages[2].metadata?.generationReason).toBe("nominated");
+    expect(messages[3].metadata?.generationReason).toBe("host_closing");
+    expect(publish).toHaveBeenCalledWith(expect.objectContaining({
+      type: "room_finished", reason: "主持人已收尾",
+    }));
+    db.close();
+  });
+
+  it("does not claim a host closing when the host skips or the budget is exhausted", async () => {
+    const skipped = await run({ mode: "host_mode", hostRoleId: "茉子" }, null,
+      (_roleId, _call, prompt) => prompt.includes("主持收尾") ? { skip: true } : {});
+    expect(skipped.messages.map((message) => message.roleId)).toEqual(["茉子", "芳乃", "丛雨"]);
+    expect(skipped.publish).toHaveBeenCalledWith(expect.objectContaining({
+      type: "room_finished", reason: "主持人没有新的收尾内容",
+    }));
+    skipped.db.close();
+
+    const capped = await run({ mode: "host_mode", hostRoleId: "茉子", maxMessages: 3 });
+    expect(capped.messages).toHaveLength(3);
+    expect(capped.publish).toHaveBeenCalledWith(expect.objectContaining({
+      type: "room_finished", reason: "达到本房间消息上限",
+    }));
+    capped.db.close();
+  });
+
+  it("allows a guest nomination to reopen a configured second host round", async () => {
+    const { db, messages } = await run({
+      mode: "host_mode", hostRoleId: "茉子", maxRounds: 2, maxMessages: 6,
+    }, null, (roleId, call) => ({ nextSpeaker: roleId === "芳乃" && call === 2 ? "茉子" : undefined }));
+    expect(messages.map((message) => message.roleId).slice(0, 4)).toEqual(["茉子", "芳乃", "丛雨", "茉子"]);
+    expect(messages[3].metadata).toMatchObject({ round: 2, generationReason: "nominated" });
+    db.close();
+  });
+
+  it("continues after a skip or role failure and reports both", async () => {
+    const { db, messages, publish } = await run({ mode: "free_chat" }, null,
+      (roleId) => {
+        if (roleId === "茉子") return { skip: true };
+        if (roleId === "丛雨") throw new Error("模型失败");
+        return {};
+      });
+    expect(messages.map((message) => message.roleId)).toEqual(["芳乃"]);
+    expect(publish).toHaveBeenCalledWith(expect.objectContaining({
+      type: "round_stats", skipped: ["茉子"], failed: ["丛雨"],
+    }));
+    db.close();
+  });
+
+  it("stops at the message cap even with a pending nomination", async () => {
+    const { db, messages, publish } = await run({ mode: "free_chat", maxMessages: 2 }, null,
+      (roleId) => ({ nextSpeaker: roleId === "芳乃" ? "丛雨" : undefined }));
+    expect(messages.map((message) => message.roleId)).toEqual(["芳乃", "丛雨"]);
+    expect(publish).toHaveBeenCalledWith(expect.objectContaining({
+      type: "room_finished", reason: "达到本房间消息上限",
+    }));
+    db.close();
+  });
+
+  it("propagates cancellation without continuing to another role", async () => {
+    const controller = new AbortController();
+    await expect(run({ mode: "free_chat" }, null,
+      () => { controller.abort(); return {}; }, controller.signal)).rejects.toMatchObject({ name: "AbortError" });
   });
 });
 

@@ -97,6 +97,7 @@ export function reduceChatStreamState(
     case "room_finished":
       return {
         ...state,
+        plannedSpeakers: [],
         finishedReason: action.reason,
       };
     case "status":

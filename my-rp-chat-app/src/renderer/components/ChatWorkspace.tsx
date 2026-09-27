@@ -161,7 +161,7 @@ export function ChatWorkspace(props: ChatWorkspaceProps) {
               <span className="muted">第 {effectiveRound} 轮</span>
               {props.mentionTarget ? <span className="muted">定向目标：@{props.mentionTarget}</span> : null}
               {props.plannedSpeakers?.length ? (
-                <span className="muted">计划发言：{props.plannedSpeakers.join(" / ")}</span>
+                <span className="muted">候选发言：{props.plannedSpeakers.join(" / ")}</span>
               ) : null}
             </div>
           ) : null}

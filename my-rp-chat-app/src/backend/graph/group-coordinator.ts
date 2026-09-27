@@ -101,6 +101,8 @@ export class GroupChatCoordinator {
     sharedHistory: ChatMessage[],
     round: number,
     targetRoleId: string | null,
+    generationReason: GroupChatGenerationReason,
+    closingTurn = false,
     antiRepeatInstruction?: string,
   ): string {
     const recentMessages = sharedHistory
@@ -124,11 +126,15 @@ export class GroupChatCoordinator {
 
     if (this.roomConfig.mode === "single_round") {
       lines.push("本房间为单轮模式，本轮结束后不要继续主动拉起下一轮对话。");
+    } else if (closingTurn || generationReason === "host_closing") {
+      lines.push("你正在为本轮主持收尾。只有能简短总结新的共识或下一步时才发言，否则设置 skip=true；不要再点名其他角色。");
     } else if (this.roomConfig.mode === "host_mode") {
       if (this.roomConfig.hostRoleId === roleId) {
-        lines.push("你是主持角色，需要先回应用户，再视情况点名下一位角色。");
+        lines.push(round === 1 && generationReason === "host_prompted"
+          ? "你是主持角色，请先回应用户，再视情况通过 nextSpeaker 点名下一位角色。"
+          : "你是主持角色，请回应上一位角色；需要时可通过 nextSpeaker 点名下一位角色。");
       } else {
-        lines.push("这是主持模式，请优先回应主持角色或用户刚刚点名的内容。");
+        lines.push("这是主持模式，请回应上一位角色或用户的问题；需要时可通过 nextSpeaker 点名下一位角色。");
       }
     } else {
       lines.push("你可以在需要时通过 nextSpeaker 指定下一位角色，但不要无意义续聊。");
@@ -146,13 +152,11 @@ export class GroupChatCoordinator {
 
   private resolveReplyTarget(
     sharedHistory: ChatMessage[],
-    targetRoleId: string | null,
   ): { replyToMessageId?: string; replyToRoleId?: string } {
     const lastMessage = sharedHistory.at(-1);
-    const lastUserMessage = [...sharedHistory].reverse().find((message) => message.role === "user");
     return {
-      replyToMessageId: lastUserMessage?.id,
-      replyToRoleId: targetRoleId ?? lastMessage?.roleId ?? undefined,
+      replyToMessageId: lastMessage?.id,
+      replyToRoleId: lastMessage?.role === "assistant" ? lastMessage.roleId ?? undefined : undefined,
     };
   }
 
@@ -205,6 +209,7 @@ export class GroupChatCoordinator {
     turnIndex: number;
     tracer?: LangChainTracer;
     antiRepeatInstruction?: string;
+    closingTurn?: boolean;
     generationReason: GroupChatGenerationReason;
   }): Promise<{
     messages: ChatMessage[];
@@ -223,6 +228,7 @@ export class GroupChatCoordinator {
       turnIndex,
       tracer,
       antiRepeatInstruction,
+      closingTurn,
       generationReason,
     } = params;
 
@@ -232,9 +238,11 @@ export class GroupChatCoordinator {
       sharedHistory,
       round,
       targetRoleId,
+      generationReason,
+      closingTurn,
       antiRepeatInstruction,
     );
-    const replyTarget = this.resolveReplyTarget(sharedHistory, targetRoleId);
+    const replyTarget = this.resolveReplyTarget(sharedHistory);
     const state = {
       chatId,
       streamId,
@@ -490,7 +498,6 @@ export class GroupChatCoordinator {
     let sharedHistory = [...messages];
     let generatedCount = 0;
     let round = 1;
-    let idleStreak = 0;
     let finishReason = "本轮已结束";
     const directedTarget = mentionTarget ?? roomConfig.targetRoleId ?? null;
     if (directedTarget && !participants.includes(directedTarget)) {
@@ -503,123 +510,97 @@ export class GroupChatCoordinator {
 
     participants.forEach((participant) => this.getOrCreateAgent(participant));
 
+    let deferredNomination: string | undefined;
+    let hostClosed = false;
+    let guestMessageCount = 0;
     while (generatedCount < roomConfig.maxMessages && round <= roomConfig.maxRounds) {
       this.ensureNotAborted();
       const targetRoleId = directedTarget;
-      const plannedSpeakers = this.planRound({
-        participants,
-        targetRoleId,
-        round,
-        sharedHistory,
-      });
+      const fallbackOrder = this.planRound({ participants, targetRoleId, round, sharedHistory });
+      const attempted = new Set<string>();
       const roundSpeakers: string[] = [];
       const roundSkipped: string[] = [];
       const roundFailed: string[] = [];
       const skippedRoles: Array<{ roleId: string; reason: GroupChatSkipReason }> = [];
       const roundStartedAt = Date.now();
-      let nominatedNextSpeaker: string | undefined;
+      let immediateNomination = deferredNomination;
+      deferredNomination = undefined;
+      let turnIndex = 0;
+      let closingAttempted = false;
 
       this.deps.sseService.publish({
-        type: "round_started",
-        streamId,
-        round,
-        mode: roomConfig.mode,
-        targetRoleId,
-      });
-      this.deps.sseService.publish({
-        type: "round_plan",
-        streamId,
-        round,
-        plannedSpeakers,
-        mode: roomConfig.mode,
-        targetRoleId,
+        type: "round_started", streamId, round, mode: roomConfig.mode, targetRoleId,
       });
       roomState = {
-        ...roomState,
-        currentRound: round,
-        currentTurn: 0,
-        plannedSpeakers,
-        lastTargetRoleId: targetRoleId,
+        ...roomState, currentRound: round, currentTurn: 0,
+        plannedSpeakers: fallbackOrder, lastTargetRoleId: targetRoleId,
       };
       this.publishRoomState(chatId, roomState);
 
-      for (let index = 0; index < plannedSpeakers.length; index += 1) {
+      for (;;) {
         this.ensureNotAborted();
+        if (closingAttempted) break;
         if (generatedCount >= roomConfig.maxMessages) {
           finishReason = "达到本房间消息上限";
           break;
         }
-        const speaker = plannedSpeakers[index];
+        const remaining = fallbackOrder.filter((participant) => !attempted.has(participant));
+        const canClose = !targetRoleId && remaining.length === 0 && roomConfig.mode === "host_mode" &&
+          !closingAttempted && (!deferredNomination || round >= roomConfig.maxRounds) && guestMessageCount > 0;
+        if (remaining.length === 0 && !canClose) break;
+
+        const isClosing = remaining.length === 0;
+        const nominated = !isClosing && immediateNomination && remaining.includes(immediateNomination)
+          ? immediateNomination : undefined;
+        const speaker = isClosing ? roomConfig.hostRoleId! : nominated ?? remaining[0];
+        immediateNomination = undefined;
+        const candidates = isClosing ? [speaker] : [speaker, ...remaining.filter((roleId) => roleId !== speaker)];
+        turnIndex += 1;
+        this.deps.sseService.publish({
+          type: "round_plan", streamId, round, plannedSpeakers: candidates,
+          mode: roomConfig.mode, targetRoleId,
+        });
+        roomState = { ...roomState, currentTurn: turnIndex, plannedSpeakers: candidates };
+        this.publishRoomState(chatId, roomState);
+
         if (this.breathingDelayMs > 0) {
           await new Promise((resolve) => setTimeout(resolve, this.breathingDelayMs));
         }
-
-        const generationReason: GroupChatGenerationReason =
-          targetRoleId && speaker === targetRoleId
-            ? "mentioned"
-            : roomConfig.mode === "host_mode" && speaker === roomConfig.hostRoleId
-              ? "host_prompted"
-              : nominatedNextSpeaker && speaker === nominatedNextSpeaker
-                ? "nominated"
-                : "scheduled";
+        const generationReason: GroupChatGenerationReason = isClosing ? "host_closing"
+          : targetRoleId ? "mentioned"
+          : nominated ? "nominated"
+          : roomConfig.mode === "host_mode" && speaker === roomConfig.hostRoleId ? "host_prompted"
+          : "scheduled";
 
         try {
           const previousSameRole = this.findPreviousAssistantMessage(sharedHistory, speaker);
           let result = await this.runAgentTurn({
-            roleId: speaker,
-            participants,
-            sharedHistory,
-            chatId,
-            streamId,
-            targetRoleId,
-            round,
-            turnIndex: index + 1,
-            tracer,
-            generationReason,
+            roleId: speaker, participants, sharedHistory, chatId, streamId, targetRoleId,
+            round, turnIndex, tracer, generationReason,
+            closingTurn: isClosing,
           });
-
-          let updatedHistory = result.messages;
-          let latestMessage = updatedHistory.at(-1);
-
-          if (!result.skip && latestMessage?.role === "assistant" && latestMessage.roleId === speaker) {
-            if (isSimilarToPrevious(previousSameRole?.content, latestMessage.content)) {
-              this.deps.repository.deleteMessage(latestMessage.id);
-              updatedHistory = sharedHistory;
-              result = await this.runAgentTurn({
-                roleId: speaker,
-                participants,
-                sharedHistory,
-                chatId,
-                streamId,
-                targetRoleId,
-                round,
-                turnIndex: index + 1,
-                tracer,
-                generationReason: "retry_rewrite",
-                antiRepeatInstruction: "不要重复你刚刚说过的内容，请补充新信息或换一个角度回应。",
-              });
-              updatedHistory = result.messages;
-              latestMessage = updatedHistory.at(-1);
-            }
+          let latestMessage = result.messages.at(-1);
+          if (!result.skip && latestMessage?.role === "assistant" && latestMessage.roleId === speaker &&
+            isSimilarToPrevious(previousSameRole?.content, latestMessage.content)) {
+            this.deps.repository.deleteMessage(latestMessage.id);
+            result = await this.runAgentTurn({
+              roleId: speaker, participants, sharedHistory, chatId, streamId, targetRoleId,
+              round, turnIndex, tracer, generationReason: "retry_rewrite",
+              closingTurn: isClosing,
+              antiRepeatInstruction: "不要重复你刚刚说过的内容，请补充新信息或换一个角度回应。",
+            });
+            latestMessage = result.messages.at(-1);
           }
-
-          if (!result.skip && latestMessage?.role === "assistant" && latestMessage.roleId === speaker) {
-            if (isSimilarToPrevious(previousSameRole?.content, latestMessage.content)) {
-              this.deps.repository.deleteMessage(latestMessage.id);
-              result = {
-                messages: sharedHistory,
-                skip: true,
-                skipReason: "similar_to_last",
-                nextSpeaker: undefined,
-              };
-              this.publishRoleSkipped(
-                streamId,
-                speaker,
-                round,
-                "similar_to_last",
-                `${speaker} 没有新的信息可补充，本轮保持沉默。`,
-              );
-            }
+          if (!result.skip && latestMessage?.role === "assistant" && latestMessage.roleId === speaker &&
+            isSimilarToPrevious(previousSameRole?.content, latestMessage.content)) {
+            this.deps.repository.deleteMessage(latestMessage.id);
+            result = { messages: sharedHistory, skip: true, skipReason: "similar_to_last" };
+            this.publishRoleSkipped(streamId, speaker, round, "similar_to_last",
+              `${speaker} 没有新的信息可补充，本轮保持沉默。`);
+          }
+          if (!result.skip && (!latestMessage || latestMessage.role !== "assistant" ||
+            latestMessage.roleId !== speaker || latestMessage.id === sharedHistory.at(-1)?.id)) {
+            result = { messages: sharedHistory, skip: true, skipReason: "no_new_value" };
           }
 
           if (result.skip) {
@@ -627,74 +608,60 @@ export class GroupChatCoordinator {
             roundSkipped.push(speaker);
             skippedRoles.push({ roleId: speaker, reason });
             if (reason !== "similar_to_last") {
-              this.publishRoleSkipped(
-                streamId,
-                speaker,
-                round,
-                reason,
-                `${speaker} 选择保持沉默。`,
-              );
+              this.publishRoleSkipped(streamId, speaker, round, reason, `${speaker} 选择保持沉默。`);
             }
+            if (isClosing) finishReason = "主持人没有新的收尾内容";
           } else {
             sharedHistory = result.messages;
             generatedCount += 1;
             roundSpeakers.push(speaker);
-          }
-
-          if (roomConfig.mode === "free_chat" && result.nextSpeaker && participants.includes(result.nextSpeaker)) {
-            nominatedNextSpeaker = result.nextSpeaker;
+            if (roomConfig.mode === "host_mode" && speaker !== roomConfig.hostRoleId) guestMessageCount += 1;
+            if (isClosing) {
+              hostClosed = true;
+              finishReason = "主持人已收尾";
+            } else if (!targetRoleId && roomConfig.mode !== "single_round") {
+              const nominee = result.nextSpeaker?.trim();
+              if (nominee && nominee !== speaker && participants.includes(nominee)) {
+                if (attempted.has(nominee)) deferredNomination = nominee;
+                else immediateNomination = nominee;
+              }
+            }
           }
         } catch (error) {
+          if (error instanceof Error && error.name === "AbortError") throw error;
           const message = error instanceof Error ? error.message : "未知错误";
           roundFailed.push(speaker);
           this.deps.sseService.publish({
-            type: "error",
-            streamId,
-            roleId: speaker,
+            type: "error", streamId, roleId: speaker,
             message: `角色 ${speaker} 发言失败：${message}`,
           });
         }
+        if (isClosing) closingAttempted = true;
+        else attempted.add(speaker);
+        roomState = {
+          ...roomState, currentTurn: turnIndex,
+          plannedSpeakers: fallbackOrder.filter((participant) => !attempted.has(participant)),
+          lastSpeakers: [...roundSpeakers], skippedRoles: [...skippedRoles],
+        };
+        this.publishRoomState(chatId, roomState);
       }
 
       this.deps.sseService.publish({
-        type: "round_stats",
-        streamId,
-        round,
-        generatedCount: roundSpeakers.length,
-        speakers: roundSpeakers,
-        skipped: roundSkipped,
-        failed: roundFailed,
+        type: "round_stats", streamId, round, generatedCount: roundSpeakers.length,
+        speakers: roundSpeakers, skipped: roundSkipped, failed: roundFailed,
         durationMs: Math.max(0, Date.now() - roundStartedAt),
       });
-
-      roomState = {
-        ...roomState,
-        currentTurn: plannedSpeakers.length,
-        lastSpeakers: roundSpeakers,
-        skippedRoles,
-        lastFinishedReason: finishReason,
-      };
-      this.publishRoomState(chatId, roomState);
-
       if (targetRoleId || roomConfig.mode === "single_round") {
         finishReason = targetRoleId ? "仅定向角色回复" : "本轮已结束";
         break;
       }
-      if (roundSpeakers.length === 0) {
-        idleStreak += 1;
-        if (idleStreak >= this.idleStreakThreshold) {
-          finishReason = "其余角色没有新内容";
-          break;
-        }
-      } else {
-        idleStreak = 0;
-      }
-      if (generatedCount >= roomConfig.maxMessages) {
-        finishReason = "达到本房间消息上限";
+      if (hostClosed || closingAttempted || generatedCount >= roomConfig.maxMessages) break;
+      if (!deferredNomination) {
+        finishReason = roundSpeakers.length === 0 ? "其余角色没有新内容" : "对话自然结束";
         break;
       }
       if (round >= roomConfig.maxRounds) {
-        finishReason = roomConfig.mode === "host_mode" ? "主持人已收尾" : "达到本轮上限";
+        finishReason = "达到本轮上限";
         break;
       }
       round += 1;
@@ -704,6 +671,7 @@ export class GroupChatCoordinator {
       ...roomState,
       lastFinishedReason: finishReason,
       currentRound: round,
+      plannedSpeakers: [],
       lastTargetRoleId: mentionTarget ?? roomConfig.targetRoleId ?? null,
     };
     this.publishRoomState(chatId, roomState);

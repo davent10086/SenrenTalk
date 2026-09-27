@@ -66,7 +66,7 @@ describe("group chat mode controls", () => {
     fireEvent.change(screen.getByRole("combobox", { name: "选择主持角色" }), { target: { value: "茉子" } });
     fireEvent.click(screen.getByRole("button", { name: /创建群聊/ }));
     expect(createGroupChat).toHaveBeenCalledWith(["芳乃", "茉子"], expect.objectContaining({
-      mode: "host_mode", hostRoleId: "茉子",
+      mode: "host_mode", hostRoleId: "茉子", maxMessages: 3,
     }));
   });
 
@@ -80,7 +80,7 @@ describe("group chat mode controls", () => {
     expect(updateGroupChatRoom).not.toHaveBeenCalled();
     fireEvent.change(screen.getByRole("combobox", { name: "选择主持角色" }), { target: { value: "芳乃" } });
     expect(updateGroupChatRoom).toHaveBeenCalledWith(expect.objectContaining({
-      roomConfig: expect.objectContaining({ mode: "host_mode", hostRoleId: "芳乃" }),
+      roomConfig: expect.objectContaining({ mode: "host_mode", hostRoleId: "芳乃", maxMessages: 3 }),
     }));
   });
 
