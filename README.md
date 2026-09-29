@@ -2,7 +2,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/TypeScript-ES2022-3178C6?logo=typescript" alt="TypeScript">
-  <img src="https://img.shields.io/badge/Node.js-%3E%3D22-339933?logo=node.js" alt="Node.js">
+  <img src="https://img.shields.io/badge/Node.js-22.x-339933?logo=node.js" alt="Node.js">
   <img src="https://img.shields.io/badge/React-18-61DAFB?logo=react" alt="React">
   <img src="https://img.shields.io/badge/Express-5-000000?logo=express" alt="Express">
   <img src="https://img.shields.io/badge/LangGraph-1.3.6-FF6F00" alt="LangGraph">
@@ -225,7 +225,8 @@ SenrenTalk/
 
 ### 环境要求
 
-- Node.js `22+`
+- Node.js `22.12+`（仅支持 22.x；推荐使用 `.nvmrc` 中的版本）
+- npm `11.x`
 - 可用的 LLM API Key
 - 可选：Elasticsearch
 - 可选：本地或远程 Embedding 服务
@@ -298,13 +299,13 @@ TTS_PROVIDER=disabled
 进入 `my-rp-chat-app/` 后执行：
 
 ```bash
-npm install
+npm ci
 ```
 
 如果 PowerShell 里 `npm` 调用异常，可以使用：
 
 ```bash
-npm.cmd install
+npm.cmd ci
 ```
 
 ### 环境变量
